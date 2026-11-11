@@ -235,7 +235,14 @@ def run_single_seed(
     torch.manual_seed(seed)
     init_model = BiometricMLP(input_dim)
     # Pre-train base model w_0 on initial enrollment sessions (Sessions 1-4, rep <= 20)
-    pretrain_base_model(init_model, X_pre_t, y_pre_t, steps=2, lr=0.12, l2_reg=l2_reg)
+    _, pretrain_stats = pretrain_base_model(
+        init_model, X_pre_t, y_pre_t, steps=2, lr=0.12, l2_reg=l2_reg, return_metrics=True
+    )
+    print(
+        f"[Seed {seed}] Base model w_0 pre-training on T0: "
+        f"Loss {pretrain_stats['pretrain_init_loss']:.4f} -> {pretrain_stats['pretrain_post_loss']:.4f}, "
+        f"Acc {pretrain_stats['pretrain_init_acc'] * 100:.2f}% -> {pretrain_stats['pretrain_post_acc'] * 100:.2f}%"
+    )
     base_state = {k: v.detach().clone() for k, v in init_model.state_dict().items()}
 
     methods = {
@@ -368,9 +375,11 @@ def main():
         "batch_size": args.batch_size,
         "uniform_l2_reg": args.l2_reg,
         "protocol": (
-            "Strictly Causal Pre-train (S1-4, rep<=20, scaler_pre) -> "
-            "Adapt (S1-4, 21<=rep<=35, scaler_adapt) -> Val (S5-6) -> Test (S7-8)"
+            "Two-tier Causal Protocol: Within-session split (S1-4, rep<=20 pretrain w_0, "
+            "21<=rep<=35 adapt, single scaler_pre) -> Forward Val (S5-6) -> Delayed Test (S7-8)"
         ),
+        "scaler": "Fixed enrollment scaler_pre fit strictly on pretrain (rep<=20)",
+        "model_architecture": "BiometricMLP (338 -> 16 [ReLU] -> 16 [ReLU] -> 1 [Logits], 5,713 params)",
     }
 
     if args.multi_seed:
@@ -398,7 +407,9 @@ def main():
                         "test_loss", "test_acc", "eer", "user_eer_mean", "user_eer_ci95",
                         "far_05", "far_at_frr_10", "far_at_val_frr_10", "frr_at_val_frr_10",
                         "roc_auc", "session_eers", "total_grad_evals", "avg_epoch_ms",
+                        "pretrain_stats",
                     ]
+                    if m_key in s_sum[k]
                 }
                 for k in s_sum
             }
@@ -449,12 +460,15 @@ def main():
         print()
 
         # Paired seed-by-seed comparison against Fletcher-Reeves Conjugate Gradients
+        from scipy import stats
         ref_key = "Conjugate Gradients (FR)"
         paired_comparisons = {}
         if ref_key in multi_res:
             ref_eers = np.array([r["eer"] * 100.0 for r in multi_res[ref_key]])
             ref_ueers = np.array([r["user_eer_mean"] * 100.0 for r in multi_res[ref_key]])
             print("Paired Seed-by-Seed Differences vs. Conjugate Gradients (FR) (d_i = EER_method,i - EER_FR,i):")
+
+            temp_comps = []
             for k, runs in multi_res.items():
                 if k == ref_key:
                     continue
@@ -466,18 +480,49 @@ def main():
                 std_d = float(np.std(diff_eer, ddof=1))
                 ci_d = float(ci_factor * std_d)
                 t_stat = float(mean_d / (std_d / np.sqrt(n_s) + 1e-12))
+                p_val = 2.0 * float(stats.t.sf(abs(t_stat), df=n_s - 1))
+                temp_comps.append({
+                    "method": k,
+                    "diff_eer": diff_eer,
+                    "mean_d": mean_d,
+                    "std_d": std_d,
+                    "ci_d": ci_d,
+                    "mean_ueer": float(np.mean(diff_ueer)),
+                    "std_ueer": float(np.std(diff_ueer, ddof=1)),
+                    "t_stat": t_stat,
+                    "p_val": p_val,
+                })
+
+            # Holm-Bonferroni step-down correction
+            m_tests = len(temp_comps)
+            sorted_indices = np.argsort([c["p_val"] for c in temp_comps])
+            running_max = 0.0
+            holm_p_vals = [0.0] * m_tests
+            for rank, idx in enumerate(sorted_indices):
+                mult = m_tests - rank
+                p_adj = min(1.0, temp_comps[idx]["p_val"] * mult)
+                running_max = max(running_max, p_adj)
+                holm_p_vals[idx] = min(1.0, running_max)
+
+            for idx, c in enumerate(temp_comps):
+                c["p_holm"] = holm_p_vals[idx]
+                k = c["method"]
                 paired_comparisons[f"{k} vs {ref_key}"] = {
-                    "paired_eer_diffs_pct": [float(x) for x in diff_eer],
-                    "mean_delta_eer_pct": mean_d,
-                    "std_delta_eer_pct": std_d,
-                    "ci95_delta_eer_pct": ci_d,
-                    "mean_delta_user_eer_pct": float(np.mean(diff_ueer)),
-                    "std_delta_user_eer_pct": float(np.std(diff_ueer, ddof=1)),
-                    "paired_t_stat": t_stat,
+                    "paired_eer_diffs_pct": [float(x) for x in c["diff_eer"]],
+                    "mean_delta_eer_pct": c["mean_d"],
+                    "std_delta_eer_pct": c["std_d"],
+                    "ci95_delta_eer_pct": c["ci_d"],
+                    "mean_delta_user_eer_pct": c["mean_ueer"],
+                    "std_delta_user_eer_pct": c["std_ueer"],
+                    "paired_t_stat": c["t_stat"],
+                    "p_value_raw": c["p_val"],
+                    "p_value_holm": c["p_holm"],
+                    "df": n_s - 1,
                 }
                 print(
-                    f"  {k:28s} - FR-CG | dEER: +{mean_d:.2f} +/- {std_d:.2f}% "
-                    f"(95% CI: +/-{ci_d:.2f}%, t={t_stat:.2f}) | dUserEER: +{np.mean(diff_ueer):.2f}%"
+                    f"  {k:28s} - FR-CG | dEER: +{c['mean_d']:.2f} +/- {c['std_d']:.2f}% "
+                    f"(95% CI: +/-{c['ci_d']:.2f}%, t={c['t_stat']:.2f}, p={c['p_val']:.4f}, p_holm={c['p_holm']:.4f}) | "
+                    f"dUserEER: +{c['mean_ueer']:.2f}%"
                 )
             print()
 

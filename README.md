@@ -3,6 +3,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![CI](https://github.com/IlsafSh/keystroke-drift-optimizers/actions/workflows/ci.yml/badge.svg)](https://github.com/IlsafSh/keystroke-drift-optimizers/actions/workflows/ci.yml)
 [![Conference: TiVS-2026](https://img.shields.io/badge/MTUCI-TiVS--2026-purple.svg)](https://mtuci.ru/science/nir_students/tivs/)
 
 > **Reference code and benchmark implementation for the paper:**  
@@ -28,7 +29,7 @@ $$
 \mathbf{w}_{k+1} = \mathbf{w}_k - \frac{\eta}{\sqrt{\mathbb{E}[\mathbf{g}_k^2] + \varepsilon}} \odot \mathbf{g}_k
 $$
 
-Dividing each partial derivative by running root-mean-square averages artificially amplifies low-amplitude jitter across noisy coordinates, causing catastrophic forgetting and degrading verification accuracy on delayed sessions (`Sessions 5–8`).
+Dividing each partial derivative by running root-mean-square averages may artificially amplify low-amplitude jitter across noisy coordinates, leading to gradient distortion and degrading verification accuracy on delayed sessions (`Sessions 5–8`).
 
 To preserve the true gradient geometry during session fine-tuning while guaranteeing monotonic decrease of the regularized objective, this repository investigates and benchmarks three deterministic first-order optimization schemes equipped with **Armijo backtracking line search**:
 
@@ -67,28 +68,30 @@ with sufficient descent verification ($`\mathbf{g}_k^\top \mathbf{p}_k < 0`$), a
 
 ---
 
-## 2. Strictly Causal Experimental Protocol & Feature Engineering
+## 2. Experimental Protocol & Feature Engineering
 
 Experiments are conducted on the **CMU Keystroke Dynamics Benchmark** (`DSL-StrongPasswordData.csv`, Killourhy & Maxion, 2009), comprising **20,400** typing samples of the 10-character strong password `.tie5Roanl` across **51 subjects** (8 sessions per subject, 50 repetitions per session).
 
-### 2.1. Chronological Split, Stratified Sampling, and Causal Standardization
-To prevent any temporal lookahead or distribution mismatch between genuine and impostor classes:
+### 2.1. Two-Tier Causal Protocol & Exact Stratification
+To prevent any lookahead or distribution mismatch between genuine and impostor classes, the benchmark implements a two-tier evaluation scheme:
 
-- **Stage 1 — Initial Registration & Base Model Pre-training (`T0`: Sessions 1–4, rep ≤ 20, `N_pretrain = 8,160`)**:
-  - Each subject's individual reference template $`(\boldsymbol{\mu}_u, \boldsymbol{\sigma}_u)`$ and the base pre-training pool (80 genuine + 80 impostor samples per subject) are computed **exclusively** from initial registration repetitions (rep ≤ 20) of Sessions 1–4.
-  - Pre-training features are standardized using `scaler_pre`, fit **strictly** on `pretrain` (rep ≤ 20, zero statistics from adaptation, validation, or test splits).
-  - The shared base neural network $`\mathbf{w}_0`$ is pre-trained on `pretrain`. All five compared optimizers start adaptation from this **exact same** `state_dict` $`\mathbf{w}_0`$.
-- **Stage 2 — Session Adaptation / Fine-Tuning (`T1`: Sessions 1–4, 21 ≤ rep ≤ 35, `N_train = 6,120`)**:
-  - 60 genuine + 60 impostor samples per subject (15 per session).
-  - Features for adaptation, validation, and testing are standardized using `scaler_adapt`, fit strictly on cumulative historical data available up to adaptation (Sessions 1–4, rep ≤ 35).
-- **Stage 3 — Intermediate Drift Validation (`T2`: Sessions 5–6, 21 ≤ rep ≤ 50, `N_val = 6,120`)**:
-  - Used for monitoring convergence dynamics and calibrating the fixed operating threshold $`\tau^*`$ where validation False Rejection Rate satisfies $`\text{FRR}_{\text{val}} \le 10\%`$.
-- **Stage 4 — Delayed Drift Testing (`T3`: Sessions 7–8, 21 ≤ rep ≤ 50, `N_test = 6,120`)**:
-  - Final evaluation on the most temporally distant sessions (`Sessions 7–8`), including independent evaluation of FAR at the validation-calibrated operating threshold $`\tau^*`$ (`FAR @ Val FRR=10%`).
-- **Session & Repetition Stratified Impostor Sampling**:
-  - In every split (`pretrain`, `train`, `val`, `test`), impostor observations ($`y = 0`$) are sampled from other subjects ($`u' \neq u`$) **stratified by `sessionIndex`** and restricted to the **exact same repetition range (`rep`)** as genuine observations ($`y = 1`$).
+- **Tier 1 — Within-Session Enrollment & Adaptation Split (Sessions 1–4)**:
+  - **Stage 1 — Initial Registration & Base Model Pre-training (`T0`: Sessions 1–4, rep ≤ 20, `N_pretrain = 8,160`)**:
+    - Each subject's individual reference template $`(\boldsymbol{\mu}_u, \boldsymbol{\sigma}_u)`$ and base pre-training pool (80 genuine + 80 impostor samples per subject) are computed **exclusively** from initial registration repetitions (rep ≤ 20) of Sessions 1–4.
+    - Pre-training features are standardized using `scaler_pre`, fit **strictly** on `pretrain` (rep ≤ 20).
+    - The shared base neural network $`\mathbf{w}_0`$ is pre-trained on `pretrain`. All five compared optimizers start adaptation from this **exact same** `state_dict` $`\mathbf{w}_0$`.
+  - **Stage 2 — Session Adaptation / Fine-Tuning (`T1`: Sessions 1–4, 21 ≤ rep ≤ 35, `N_train = 6,120`)**:
+    - 60 genuine + 60 impostor samples per subject (15 per session).
+    - Standardized using the exact same fixed reference coordinate space (`scaler_pre`), eliminating artificial coordinate jumps between pre-training and adaptation.
+- **Tier 2 — Chronological Forward Evaluation on Delayed Calendar Sessions (Sessions 5–8)**:
+  - **Stage 3 — Intermediate Drift Validation (`T2`: Sessions 5–6, 21 ≤ rep ≤ 50, `N_val = 6,120`)**:
+    - Used for monitoring convergence dynamics and calibrating the fixed operating threshold $`\tau^*`$ where validation False Rejection Rate satisfies $`\text{FRR}_{\text{val}} \le 10\%`$.
+  - **Stage 4 — Delayed Drift Testing (`T3`: Sessions 7–8, 21 ≤ rep ≤ 50, `N_test = 6,120`)**:
+    - Final evaluation on the most temporally distant sessions (`Sessions 7–8`), including independent evaluation of FAR at the validation-calibrated operating threshold $`\tau^*`$ (`FAR @ Val FRR=10%`).
+- **Exact 1-to-1 Session & Repetition Stratified Impostor Sampling**:
+  - In every split (`pretrain`, `train`, `val`, `test`), each genuine observation $(u, s, r)$ for subject $u$, session $s$, and repetition $r$ is matched 1-to-1 with an impostor observation from another subject $u' \neq u$ with the **exact same session index $s$ and repetition number $r$**. This guarantees 100% identical joint marginal distributions of session and repetition across classes.
 
-### 2.2. Intra-Group Biometric Feature Space ($D = 338$)
+### 2.2. Subject-Conditioned Enrollment-Normalized Feature Space ($D = 338$)
 The 31 raw timing columns are validated and ordered into three physically homogeneous blocks: **11 Hold times** (H1…H11), **10 Down-Down latencies** (DD1…DD10), and **10 Up-Down flight times** (UD1…UD10). All finite differences and adjacent products are computed **strictly inside each homogeneous group** without cyclic wrap-around (`np.roll` is never used):
 
 | Feature Group | Dim | Mathematical Definition |
@@ -100,16 +103,16 @@ The 31 raw timing columns are validated and ordered into three physically homoge
 | 5. Clipped quadratic rhythm deviations | 31 | $`\min(z_{\text{rhy}, k}^2,\,16.0)`$ |
 | 6. Clipped quadratic combined deviations | 31 | $`\min(z_{\text{comb}, k}^2,\,16.0)`$ |
 | 7. Intra-group adjacent products | 31 | Within H (10+1 mean), DD (9+1 mean), and UD (9+1 mean) separately |
-| 8. Intra-digraph deviation couplings | 31 | $`z_{\text{H},i} z_{\text{UD},i,i+1}`$ (10), $`z_{\text{H},i+1} z_{\text{DD},i,i+1}`$ (10), $`z_{\text{DD},i,i+1} z_{\text{UD},i,i+1}`$ (10) + mean (1) |
+| 8. Intra-digraph deviation couplings | 31 | $`z_{\text{H},i} z_{\text{UD},i,i+1}`$ (10), $`z_{\text{H},i+1} z_{\text{DD},i,i+1}`$ (10), $`z_{\text{DD},i,i+1} z_{\text{UD},i,i+1}`$ (10) on $`z_{\text{comb}}`$ + mean (1) |
 | 9. Signed session drift deviations | 31 | $`(x_k - \mu_{x, k}^{(s_1)}) / \sigma_{x, k}`$ relative to initial Session 1 baseline |
 | 10. Intra-group first differences | 31 | $`\Delta \text{H}_i`$ (10+1 norm), $`\Delta \text{DD}_i`$ (9+1 norm), $`\Delta \text{UD}_i`$ (9+1 norm) without crossing group boundaries |
 | 11. Relative hold-time deviations | 11 | $`\lvert h_i - \mu_{h, i} \rvert / \sigma_{h, i}`$, where normalized hold time $`h_i = H_i / \text{mean}(H)`$ |
 | 12. Key-rollover indicators | 10 | Binary indicator $`I(\text{UD}_{i,i+1} < 0)`$ for key rollover (press before previous release) |
 | 13. Statistical summary norms | 7 | Summary norms: mean, $`L_2`$-norm, and 75th percentile of absolute deviations |
-| **Total** | **338** | Strictly causal, target-independent biometric representation |
+| **Total** | **338** | Subject-conditioned, enrollment-normalized biometric representation |
 
 ### 2.3. Neural Network Architecture & Computational Budget Accounting
-- **Classifier (`BiometricMLP`)**: `338 -> 96 (ELU) -> 48 (ELU) -> 1 (Logits / Sigmoid)`, comprising $`m = 37\,249`$ trainable parameters partitioned into $`B = 3`$ topological layer blocks.
+- **Classifier (`BiometricMLP`)**: `338 -> 16 (ReLU) -> 16 (ReLU) -> 1 (Logits / Sigmoid)`, comprising exactly $`m = (338 \times 16 + 16) + (16 \times 16 + 16) + (16 \times 1 + 1) = 5\,713`$ trainable parameters partitioned into $`B = 3`$ topological layer blocks.
 - **Unified Objective Function**: Numerically stable binary cross-entropy on logits (`BCEWithLogitsLoss`) with identical Tikhonov $`L_2`$ weight decay ($`\lambda = 0.009`$) across **all five** optimizers:
 
 $$
@@ -129,21 +132,21 @@ $$
 
 | Optimization Method | Grad Evals | Train Loss | Train Acc, % | Val Loss | Val Acc, % | Test Loss | Test Acc, % | Pooled EER, % | Per-User EER, % | FAR @ 0.5, % | FAR @ Val FRR=10%, % | ROC AUC | Epoch Time, ms |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 80 (mini) | 0.1322 | 95.65 | 0.3384 | 86.44 | 0.5587 | 79.38 | 16.63 | 13.94 ± 9.04 | 5.78 | 13.20 | 0.9162 | 22.4 |
-| **Adam (baseline)** | 80 (mini) | 0.1334 | 95.41 | 0.3269 | 86.63 | 0.5355 | 79.85 | 17.04 | 13.82 ± 8.70 | 6.80 | 13.79 | 0.9143 | 26.0 |
-| **Steepest Descent (Armijo)** | 80 (full) | 0.1294 | 95.29 | **0.3205** | 87.22 | **0.5074** | 81.75 | 16.11 | 13.30 ± 9.00 | 6.93 | 13.30 | 0.9208 | 69.1 |
-| **Block Coordinate Descent** | 240 (block) | 0.1257 | 95.64 | 0.3274 | 86.99 | 0.5234 | 81.27 | 16.09 | 13.43 ± 8.87 | 6.34 | 13.30 | 0.9203 | 113.0 |
-| **Conjugate Gradients (FR)** | 80 (full) | **0.0904** | **97.22** | 0.3298 | **87.88** | 0.5430 | **81.78** | **15.59** | **12.83 ± 8.63** | 6.05 | **11.86** | **0.9262** | 69.7 |
+| **RMSprop (baseline)** | 80 (mini) | 0.1272 | 95.46 | 0.3676 | 86.18 | 0.6201 | 78.56 | 17.68 | 15.67 ± 14.72 | 6.41 | 15.26 | 0.9047 | 23.5 |
+| **Adam (baseline)** | 80 (mini) | 0.1296 | 95.20 | 0.3438 | 86.37 | 0.5924 | 78.97 | 18.38 | 15.95 ± 14.58 | 7.29 | 14.77 | 0.9041 | 25.0 |
+| **Steepest Descent (Armijo)** | 80 (full) | 0.1253 | 95.34 | **0.3264** | 87.16 | **0.5359** | **81.03** | **16.21** | 14.75 ± 13.41 | 7.35 | 14.31 | **0.9144** | 70.3 |
+| **Block Coordinate Descent** | 240 (block) | **0.1217** | 95.39 | 0.3285 | 87.21 | 0.5455 | 80.88 | 16.27 | 14.87 ± 13.47 | 7.42 | 14.08 | 0.9140 | 106.1 |
+| **Conjugate Gradients (FR)** | 80 (full) | **0.0855** | **97.24** | 0.3510 | **87.34** | 0.6084 | 80.46 | 16.50 | **14.72 ± 13.42** | 6.67 | **12.78** | 0.9134 | 58.8 |
 
 ### 3.2. Chronological Per-Session EER Progression (`Sessions 5 -> 6 -> 7 -> 8`, `seed = 42`)
 
 | Optimization Method | Session 5 (Val), % | Session 6 (Val), % | Session 7 (Test), % | Session 8 (Test), % | Drift Degradation (S8 − S5), pp |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 10.98 | 12.84 | 16.54 | 17.12 | +6.14 |
-| **Adam (baseline)** | 11.27 | 13.14 | 16.73 | 17.39 | +6.12 |
-| **Steepest Descent (Armijo)** | 11.34 | 12.61 | 15.72 | 16.60 | +5.26 |
-| **Block Coordinate Descent** | 10.88 | 12.55 | 15.65 | 16.41 | +5.53 |
-| **Conjugate Gradients (FR)** | **10.13** | **11.93** | **15.10** | **15.59** | **+5.46** |
+| **RMSprop (baseline)** | 12.19 | 13.10 | 16.60 | 18.66 | +6.47 |
+| **Adam (baseline)** | 11.96 | 13.33 | 17.61 | 18.95 | +6.99 |
+| **Steepest Descent (Armijo)** | 11.27 | 12.78 | 15.92 | 16.73 | **+5.46** |
+| **Block Coordinate Descent** | 11.21 | 12.55 | 15.92 | 16.76 | +5.55 |
+| **Conjugate Gradients (FR)** | **10.62** | **12.75** | **15.82** | **17.25** | +6.63 |
 
 ### 3.3. Multi-Seed Statistical Evaluation (Seeds 42–46, Student-t 95% CI, df = 4)
 
@@ -151,22 +154,22 @@ Confidence intervals are calculated using the two-tailed Student-$t$ distributio
 
 | Optimization Method | Pooled EER, % (mean ± std [95% CI]) | Per-User EER, % (mean ± std [95% CI]) | FAR @ 0.5, % (mean ± std) | FAR @ Val FRR=10%, % (mean ± std) | ROC AUC (mean ± std) |
 | :--- | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 17.27 ± 0.37 [±0.46] | 14.71 ± 0.60 [±0.74] | 6.12 ± 0.53 | 14.77 ± 1.56 | 0.9113 ± 0.0033 |
-| **Adam (baseline)** | 17.73 ± 0.68 [±0.84] | 14.81 ± 0.78 [±0.97] | 7.33 ± 0.42 | 15.53 ± 1.72 | 0.9092 ± 0.0048 |
-| **Steepest Descent (Armijo)** | 17.17 ± 0.86 [±1.07] | 14.75 ± 0.89 [±1.10] | 6.97 ± 0.36 | 14.83 ± 1.73 | 0.9119 ± 0.0062 |
-| **Block Coordinate Descent** | 17.19 ± 0.91 [±1.13] | 14.60 ± 0.85 [±1.06] | 6.81 ± 0.36 | 14.72 ± 1.66 | 0.9120 ± 0.0063 |
-| **Conjugate Gradients (FR)** | **16.54 ± 0.84 [±1.05]** | **13.89 ± 0.66 [±0.81]** | 6.25 ± 0.38 | **13.73 ± 1.64** | **0.9174 ± 0.0054** |
+| **RMSprop (baseline)** | 17.41 ± 0.27 [±0.34] | 15.18 ± 0.60 [±0.74] | **5.65 ± 0.90** | 13.79 ± 0.96 | 0.9088 ± 0.0029 |
+| **Adam (baseline)** | 17.66 ± 0.41 [±0.51] | 15.29 ± 0.51 [±0.63] | 6.53 ± 0.52 | 13.88 ± 0.75 | 0.9091 ± 0.0030 |
+| **Steepest Descent (Armijo)** | 16.97 ± 0.47 [±0.58] | 15.00 ± 0.39 [±0.48] | 6.38 ± 0.68 | 13.57 ± 0.84 | 0.9117 ± 0.0021 |
+| **Block Coordinate Descent** | 16.78 ± 0.36 [±0.45] | 14.72 ± 0.54 [±0.68] | 6.52 ± 0.57 | 13.24 ± 0.83 | 0.9127 ± 0.0027 |
+| **Conjugate Gradients (FR)** | **16.41 ± 0.29 [±0.36]** | **14.25 ± 0.27 [±0.33]** | 5.76 ± 0.67 | **12.08 ± 0.81** | **0.9168 ± 0.0030** |
 
 ### 3.4. Paired Seed-by-Seed Differences vs. Fletcher–Reeves CG
 
-Because all methods share the exact same data splits and pre-trained initialization $`\mathbf{w}_0`$ within each seed $`i \in \{42, 43, 44, 45, 46\}`$, paired differences isolate optimizer variance from dataset sampling variance:
+Because all methods share the exact same data splits and pre-trained initialization $`\mathbf{w}_0`$ within each seed $`i \in \{42, 43, 44, 45, 46\}`$, paired differences isolate optimizer variance from dataset sampling variance. Multiple comparisons are evaluated using Student-$t$ tests ($`df = 4`$) with **Holm–Bonferroni step-down correction**:
 
-| Baseline Method vs. FR-CG | Mean Paired ΔEER, pp | Paired Std $s_d$, pp | Student-t 95% CI (df=4), pp | Paired t-statistic | Mean Paired ΔUser EER, pp |
-| :--- | :---: | :---: | :---: | :---: | :---: |
-| **Adam − FR-CG** | **+1.19** | 0.43 | ±0.53 ([+0.66, +1.72]) | t = 6.19 | **+0.92** |
-| **RMSprop − FR-CG** | **+0.73** | 0.69 | ±0.85 ([-0.12, +1.58]) | t = 2.36 | **+0.82** |
-| **Block Coordinate Descent − FR-CG** | **+0.64** | 0.45 | ±0.56 ([+0.08, +1.20]) | t = 3.22 | **+0.71** |
-| **Steepest Descent − FR-CG** | **+0.63** | 0.31 | ±0.39 ([+0.24, +1.02]) | t = 4.55 | **+0.85** |
+| Baseline Method vs. FR-CG | Mean Paired ΔEER, pp | Paired Std $s_d$, pp | Student-t 95% CI (df=4), pp | Paired t-stat | p-value (raw) | p-value (Holm) | Mean Paired ΔUser EER, pp |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| **Adam − FR-CG** | **+1.25** | 0.43 | ±0.53 ([+0.72, +1.78]) | t = 6.53 | p = 0.0028 | **p = 0.0085** | **+1.04** |
+| **RMSprop − FR-CG** | **+1.00** | 0.16 | ±0.20 ([+0.80, +1.20]) | t = 14.18 | p = 0.0001 | **p = 0.0006** | **+0.93** |
+| **Steepest Descent − FR-CG** | **+0.56** | 0.52 | ±0.64 ([-0.08, +1.20]) | t = 2.40 | p = 0.0746 | p = 0.1492 | **+0.75** |
+| **Block Coordinate Descent − FR-CG** | **+0.37** | 0.41 | ±0.51 ([-0.14, +0.88]) | t = 2.04 | p = 0.1114 | p = 0.1492 | **+0.47** |
 
 ---
 
@@ -184,6 +187,9 @@ Because all methods share the exact same data splits and pre-trained initializat
 
 ```text
 keystroke-drift-optimizers/
+├── .github/
+│   └── workflows/
+│       └── ci.yml                   # Automated GitHub Actions CI workflow (Python 3.10–3.12)
 ├── data/
 │   └── DSL-StrongPasswordData.csv   # CMU Keystroke Dynamics Benchmark dataset (20,400 samples)
 ├── figures/
@@ -192,11 +198,11 @@ keystroke-drift-optimizers/
 ├── src/
 │   ├── __init__.py
 │   ├── dataset.py                   # Schema validation, causal splits, 338-dim intra-group features
-│   ├── models.py                    # BiometricMLP (338->96->48->1) with 3 topological layer blocks
+│   ├── models.py                    # BiometricMLP (338->16->16->1) with 3 topological layer blocks
 │   ├── optimizers.py                # Pre-training, Armijo line search, 3-block BCD, FR-CG, RMSprop, Adam
 │   └── metrics.py                   # Pooled/Per-User/Per-Session EER, Student-t CI, val-calibrated FAR@FRR10
 ├── tests/
-│   └── test_pipeline.py             # Automated unit tests for mathematical & causal invariants
+│   └── test_pipeline.py             # 7 automated unit tests for mathematical & causal invariants
 ├── run_experiments.py               # Main CLI runner (single-seed + 5-seed paired statistical suite)
 ├── experiment_results.json          # Saved metrics, ROC curves, and 5-seed paired statistics
 ├── requirements.txt
@@ -207,7 +213,7 @@ keystroke-drift-optimizers/
 ```bash
 pip install -r requirements.txt
 
-# Run automated unit test suite (6 tests)
+# Run automated unit test suite (7 tests)
 pytest -v
 
 # Run full benchmark including Adam and 5-seed paired statistical evaluation

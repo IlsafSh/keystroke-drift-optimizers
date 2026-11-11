@@ -5,7 +5,7 @@ for adaptive neural network fine-tuning under uniform L2 Tikhonov regularization
 """
 
 import time
-from typing import Dict, Generator, List, Tuple
+from typing import Dict, Generator, List, Tuple, Union
 import numpy as np
 import torch
 import torch.nn as nn
@@ -56,13 +56,17 @@ def pretrain_base_model(
     steps: int = 2,
     lr: float = 0.12,
     l2_reg: float = 0.009,
-) -> nn.Module:
+    return_metrics: bool = False,
+) -> Union[nn.Module, Tuple[nn.Module, Dict[str, float]]]:
     """
-    Pre-trains the initial biometric verification model w_0 on initial registration
+    Pre-trains initial biometric verification model w_0 on initial registration
     observations (Sessions 1-4, rep <= 20, standardized strictly with scaler_pre)
     prior to adaptive session fine-tuning. All compared optimizers subsequently
     start from this identical pre-trained state w_0.
     """
+    with torch.no_grad():
+        init_loss, init_acc, _ = evaluate_model(model, X_pretrain, y_pretrain)
+
     model.train()
     for _ in range(steps):
         model.zero_grad()
@@ -72,6 +76,20 @@ def pretrain_base_model(
             for p in model.parameters():
                 if p.grad is not None:
                     p.add_(-lr * p.grad)
+
+    with torch.no_grad():
+        post_loss, post_acc, _ = evaluate_model(model, X_pretrain, y_pretrain)
+
+    metrics = {
+        "pretrain_init_loss": float(init_loss),
+        "pretrain_init_acc": float(init_acc),
+        "pretrain_post_loss": float(post_loss),
+        "pretrain_post_acc": float(post_acc),
+        "pretrain_steps": steps,
+        "pretrain_lr": lr,
+    }
+    if return_metrics:
+        return model, metrics
     return model
 
 

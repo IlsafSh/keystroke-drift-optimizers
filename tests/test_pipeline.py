@@ -184,7 +184,7 @@ def test_chronological_causality_and_stratified_impostors():
 
     # Verify that scaler_pre was fit strictly on X_pre (zero mean on pretrain split)
     assert np.allclose(np.mean(X_pre, axis=0), 0.0, atol=1e-4)
-    assert not np.allclose(meta["scaler_pre_mean"], meta["scaler_adapt_mean"])
+    assert np.allclose(meta["scaler_pre_mean"], meta["scaler_adapt_mean"])
 
     # Verify chronological session isolation
     sess = meta["sessions"]
@@ -200,7 +200,7 @@ def test_chronological_causality_and_stratified_impostors():
     assert np.all((reps["val"] >= 21) & (reps["val"] <= 50))
     assert np.all((reps["test"] >= 21) & (reps["test"] <= 50))
 
-    # Verify identical session counts between genuine (y==1) and impostor (y==0) in every split
+    # Verify identical session and exact repetition counts between genuine (y==1) and impostor (y==0) in every split
     for split_name, y_arr in [("pretrain", y_pre), ("train", y_tr), ("val", y_vl), ("test", y_te)]:
         s_arr = sess[split_name]
         r_arr = reps[split_name]
@@ -208,10 +208,48 @@ def test_chronological_causality_and_stratified_impostors():
         neg_sess, neg_cnt = np.unique(s_arr[y_arr == 0], return_counts=True)
         assert np.array_equal(pos_sess, neg_sess)
         assert np.array_equal(pos_cnt, neg_cnt)
-        # Verify identical repetition range between genuine and impostor
-        assert set(np.unique(r_arr[y_arr == 1])) == set(np.unique(r_arr[y_arr == 0]))
+
+        # Verify exact 1-to-1 repetition histogram matching
+        pos_reps, pos_r_cnt = np.unique(r_arr[y_arr == 1], return_counts=True)
+        neg_reps, neg_r_cnt = np.unique(r_arr[y_arr == 0], return_counts=True)
+        assert np.array_equal(pos_reps, neg_reps)
+        assert np.array_equal(pos_r_cnt, neg_r_cnt)
 
     # Verify determinism under fixed seed
     X_tr2, y_tr2, _, _, _, _ = prepare_concept_drift_dataset(csv_path, seed=42, return_subjects=False)
     assert np.array_equal(X_tr, X_tr2)
     assert np.array_equal(y_tr, y_tr2)
+
+
+def test_model_architecture_and_parameter_accounting():
+    """
+    Verifies that BiometricMLP(338) conforms strictly to the specified architecture:
+    338 -> 16 (ReLU) -> 16 (ReLU) -> 1, comprising exactly 5,713 trainable parameters,
+    and exposes 3 layer blocks for Block Coordinate Descent.
+    """
+    model = BiometricMLP(input_dim=338)
+    assert model.fc1.in_features == 338
+    assert model.fc1.out_features == 16
+    assert model.fc2.in_features == 16
+    assert model.fc2.out_features == 16
+    assert model.fc3.in_features == 16
+    assert model.fc3.out_features == 1
+    assert model.num_parameters == 5713
+
+    # Check forward logits with dummy tensor
+    x = torch.randn(8, 338)
+    logits = model.forward_logits(x)
+    probs = model(x)
+    assert logits.shape == (8,)
+    assert probs.shape == (8,)
+    assert torch.all((probs >= 0.0) & (probs <= 1.0))
+
+    # Verify 3 topological layer blocks
+    blocks = model.layer_blocks()
+    assert len(blocks) == 3
+    assert blocks[0][0].shape == (16, 338)
+    assert blocks[0][1].shape == (16,)
+    assert blocks[1][0].shape == (16, 16)
+    assert blocks[1][1].shape == (16,)
+    assert blocks[2][0].shape == (1, 16)
+    assert blocks[2][1].shape == (1,)

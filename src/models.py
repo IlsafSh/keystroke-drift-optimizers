@@ -9,19 +9,29 @@ import torch.nn as nn
 
 class BiometricMLP(nn.Module):
     """
-    Three-layer Multi-Layer Perceptron (MLP: D -> 16 -> 16 -> 1)
-    for binary verification (legitimate user vs zero-effort impostor).
-    Provides raw logits (for numerically stable BCEWithLogitsLoss),
-    calibrated verification probabilities via sigmoid, and explicit
-    layer-wise parameter blocks [(W_1, b_1), (W_2, b_2), (W_3, b_3)]
-    for Gauss-Seidel Block Coordinate Descent.
+    Three-layer Multi-Layer Perceptron (MLP: D -> 16 -> 16 -> 1 with ReLU activations)
+    for binary continuous verification (legitimate user vs zero-effort impostor).
+    For D = 338 features, contains exactly m = (338*16+16) + (16*16+16) + (16*1+1) = 5,713
+    trainable parameters.
+
+    Provides:
+    - raw logits (for numerically stable BCEWithLogitsLoss),
+    - calibrated verification probabilities via sigmoid,
+    - explicit layer-wise parameter blocks [(W_1, b_1), (W_2, b_2), (W_3, b_3)]
+      for Gauss-Seidel Block Coordinate Descent.
     """
 
     def __init__(self, input_dim: int):
         super().__init__()
+        self.input_dim = input_dim
         self.fc1 = nn.Linear(input_dim, 16)
         self.fc2 = nn.Linear(16, 16)
         self.fc3 = nn.Linear(16, 1)
+
+    @property
+    def num_parameters(self) -> int:
+        """Returns total number of trainable parameters."""
+        return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
     def layer_blocks(self) -> List[List[nn.Parameter]]:
         """Returns the B = 3 topological layer parameter blocks [(W_l, b_l)]."""

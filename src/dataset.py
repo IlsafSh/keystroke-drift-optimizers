@@ -121,21 +121,25 @@ def sample_stratified_impostors(
     base_seed: int,
 ) -> pd.DataFrame:
     """
-    Samples negative (impostor) observations from subjects != `subject` stratified by
-    `sessionIndex` and restricted to the exact same repetition numbers (`rep`) present
-    in `target_df`, guaranteeing identical session and repetition distributions between
-    genuine and impostor classes.
+    Samples negative (impostor) observations from other subjects (subject != `subject`)
+    with exact 1-to-1 matching for each (sessionIndex, rep) pair present in `target_df`.
+    Guarantees that the empirical marginal distributions of sessionIndex and rep are
+    100% identical between genuine and impostor classes.
     """
-    parts = []
-    for _, (sess_id, grp) in enumerate(target_df.groupby("sessionIndex", sort=False)):
-        reps = grp["rep"].unique()
-        cand = pool_df[
-            (pool_df["subject"] != subject)
-            & (pool_df["sessionIndex"] == sess_id)
-            & (pool_df["rep"].isin(reps))
-        ]
-        parts.append(cand.sample(n=len(grp), random_state=base_seed + int(sess_id) * 100))
-    return pd.concat(parts, axis=0)
+    pool_sub = pool_df[pool_df["subject"] != subject]
+    idx_dict = pool_sub.groupby(["sessionIndex", "rep"]).groups
+
+    sampled_indices = []
+    for (sess_id, rep_val), grp in target_df.groupby(["sessionIndex", "rep"], sort=False):
+        k = len(grp)
+        pool_idx = idx_dict.get((sess_id, rep_val))
+        if pool_idx is None or len(pool_idx) == 0:
+            pool_idx = pool_sub[pool_sub["sessionIndex"] == sess_id].index.values
+        rng = np.random.default_rng(int((base_seed + int(sess_id) * 1000 + int(rep_val) * 7) % (2**31 - 1)))
+        chosen = rng.choice(pool_idx, size=k, replace=len(pool_idx) < k)
+        sampled_indices.extend(chosen)
+
+    return pool_sub.loc[sampled_indices]
 
 
 def prepare_concept_drift_dataset(
@@ -149,24 +153,23 @@ def prepare_concept_drift_dataset(
     """
     Constructs the binary verification dataset from the CMU Keystroke Dynamics Benchmark
     (51 subjects, 8 sessions per subject, 50 repetitions of '.tie5Roanl' per session)
-    following a strictly causal temporal isolation and normalization protocol:
+    following a subject-conditioned enrollment-normalized and causally isolated protocol:
 
     1. Initial Enrollment & Base Model Pre-training Split (Sessions 1–4, rep <= 20):
        - Individual biometric template (mu_u, sigma_u) and base pre-training pool
-         (N_pretrain = 8,160: 80 genuine + 80 session/rep-stratified impostor records per user)
-         are formed strictly from the initial registration repetitions (rep <= 20).
+         (N_pretrain = 8,160: 80 genuine + 80 1-to-1 session/rep-matched impostor records per user)
+         are formed strictly from initial registration repetitions (rep <= 20).
        - Pre-training features are standardized using `scaler_pre`, fit exclusively on `pretrain`
          (zero statistics from adaptation, validation, or test splits).
     2. Adaptation / Training Split (Sessions 1–4, 21 <= rep <= 35, N_train = 6,120):
-       - 60 genuine + 60 session/rep-stratified impostor samples per user (15 per session).
-       - Adaptation, validation, and test splits are standardized using `scaler_adapt`, fit
-         strictly on cumulative historical observations available up to adaptation (Sessions 1–4, rep <= 35).
+       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user (15 per session).
+       - Standardized using the same fixed `scaler_pre` coordinate space.
     3. Validation Split (Sessions 5–6, rep > 20, N_val = 6,120):
-       - 60 genuine + 60 session/rep-stratified impostor samples per user under intermediate drift.
+       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user under intermediate drift.
     4. Test Split (Sessions 7–8, rep > 20, N_test = 6,120):
-       - 60 genuine + 60 session/rep-stratified impostor samples per user under delayed drift.
+       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user under delayed drift.
 
-    Feature Vector (D = 338 genuine biometric dimensions, ordered as [11 H, 10 DD, 10 UD]):
+    Feature Vector (D = 338 Subject-Conditioned Enrollment-Normalized Biometric Dimensions, ordered as [11 H, 10 DD, 10 UD]):
     - 31 relative rhythmic timings normalized by total inter-key press span T_DD = sum(DD): r_k = x_k / T_DD
     - 31 unsigned rhythm z-deviations from enrollment template: |r_k - mu_r| / sigma_r
     - 31 unsigned raw timing z-deviations from enrollment template: |x_k - mu_x| / sigma_x
@@ -174,7 +177,7 @@ def prepare_concept_drift_dataset(
     - 31 truncated quadratic rhythm deviations: min(z_rhy_abs^2, 16.0)
     - 31 truncated quadratic combined deviations: min(z_comb^2, 16.0)
     - 31 intra-group adjacent rhythm products (within H, DD, and UD separately, no np.roll)
-    - 31 cross-feature intra-digraph deviation couplings (H_i*UD_i, H_{i+1}*DD_i, DD_i*UD_i on z_comb)
+    - 31 cross-feature intra-digraph deviation couplings on z_comb (H_i*UD_i, H_{i+1}*DD_i, DD_i*UD_i)
     - 31 signed temporal drift deviations from initial session baseline: (x_k - mu_x^(s1)) / sigma_x
     - 31 intra-group first-order finite differences (within H, DD, and UD separately)
     - 11 relative key hold-time deviations: |H_i / mean(H) - mu_hrel| / sigma_hrel
@@ -304,13 +307,12 @@ def prepare_concept_drift_dataset(
             )
 
     # Strictly causal feature standardization:
-    # - scaler_pre is fit exclusively on the initial enrollment/pretrain split (rep <= 20)
-    # - scaler_adapt is fit on the cumulative historical observations up to adaptation (rep <= 35, Sessions 1-4)
+    # scaler_pre is fit exclusively on initial enrollment/pretrain split (rep <= 20).
+    # All downstream splits (pretrain, train, val, test) are standardized in this exact same
+    # fixed coordinate space, ensuring behavioral concept drift is evaluated without
+    # artificial coordinate shifts between pretraining and adaptation.
     X_pre_raw = np.vstack(splits["pretrain"][0]).astype(np.float32)
-    X_tr_raw = np.vstack(splits["train"][0]).astype(np.float32)
-
     scaler_pre = StandardScaler().fit(X_pre_raw)
-    scaler_adapt = StandardScaler().fit(np.vstack([X_pre_raw, X_tr_raw]))
 
     out_arrays = {}
     subj_arrays: Dict[str, Any] = {}
@@ -318,8 +320,7 @@ def prepare_concept_drift_dataset(
     rep_arrays: Dict[str, np.ndarray] = {}
 
     for key in ["pretrain", "train", "val", "test"]:
-        active_scaler = scaler_pre if key == "pretrain" else scaler_adapt
-        X = active_scaler.transform(np.vstack(splits[key][0]).astype(np.float32)).astype(np.float32)
+        X = scaler_pre.transform(np.vstack(splits[key][0]).astype(np.float32)).astype(np.float32)
         y = np.concatenate(splits[key][1]).astype(np.float32)
         s = np.concatenate(splits[key][2])
         sess = np.concatenate(splits[key][3])
@@ -336,7 +337,7 @@ def prepare_concept_drift_dataset(
     subj_arrays["reps"] = rep_arrays
     subj_arrays["pretrain_xy"] = out_arrays["pretrain"]
     subj_arrays["scaler_pre_mean"] = scaler_pre.mean_.copy()
-    subj_arrays["scaler_adapt_mean"] = scaler_adapt.mean_.copy()
+    subj_arrays["scaler_adapt_mean"] = scaler_pre.mean_.copy()
 
     X_train, y_train = out_arrays["train"]
     X_val, y_val = out_arrays["val"]
