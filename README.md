@@ -125,9 +125,9 @@ $$
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
 | **RMSprop (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 18.7 |
 | **Adam (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 21.0 |
-| **Steepest Descent (Armijo)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 168.4 ± 1.7 | 8.4 ± 1.7 | 43.2 |
+| **Steepest Descent (Armijo)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 168.4 ± 3.8 | 8.4 ± 3.8 | 43.2 |
 | **Block Coordinate Descent** | 4 sweeps × 3 blocks / epoch | 6,120 | 240 (block) | 1,468,800 | 482.4 ± 0.5 | 2.4 ± 0.5 | 103.4 |
-| **Conjugate Gradients (FR)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 165.4 ± 2.3 | 5.4 ± 2.3 | 46.4 |
+| **Conjugate Gradients (FR)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 165.4 ± 3.8 | 5.4 ± 3.8 | 46.4 |
 
 *Note:* For Armijo line-search methods, each step reuses the forward pass loss $`\mathcal{L}(\mathbf{w}_k)`$ computed during gradient evaluation and performs 1 trial evaluation $`\mathcal{L}(\mathbf{w}_k + \alpha_0 \mathbf{p}_k)`$ plus any step-halving backtracking evaluations (`Func Evals = Grad Evals + Steps + Backtracking Steps`).
 
@@ -139,11 +139,11 @@ $$
 
 | Optimization Method | Grad Evals | Func Evals | Train Loss | Train Acc, % | Val Loss | Val Acc, % | Test Loss | Test Acc, % | Pooled EER, % | Per-User EER, % | FAR @ Val FRR=10%, % | FRR @ Val FRR=10%, % | ROC AUC | Epoch Time, ms |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 80 (mini) | 80 | 0.1272 | 95.46 | 0.3676 | 86.18 | 0.6201 | 78.56 | 17.68 | 15.67 ± 14.72 | 15.26 | 21.18 | 0.9047 | 18.7 |
-| **Adam (baseline)** | 80 (mini) | 80 | 0.1296 | 95.20 | 0.3438 | 86.37 | 0.5924 | 78.97 | 18.38 | 15.95 ± 14.58 | 14.77 | 22.71 | 0.9041 | 21.0 |
-| **Steepest Descent (Armijo)** | 80 (full) | 166 | 0.1253 | 95.34 | **0.3264** | 87.16 | **0.5359** | **81.03** | **16.21** | 14.75 ± 13.41 | 14.31 | **19.51** | **0.9144** | 43.2 |
-| **Block Coordinate Descent** | 240 (block) | 482 | 0.1217 | 95.39 | 0.3285 | 87.21 | 0.5455 | 80.88 | 16.27 | 14.87 ± 13.47 | 14.08 | 19.67 | 0.9140 | 103.4 |
-| **Conjugate Gradients (FR)** | 80 (full) | 167 | **0.0855** | **97.24** | 0.3510 | **87.34** | 0.6084 | 80.46 | 16.50 | **14.72 ± 13.42** | **12.78** | 21.37 | 0.9134 | 46.4 |
+| **RMSprop (baseline)** | 80 (mini) | 80 | 0.1272 | 95.46 | 0.3676 | 86.18 | 0.6201 | 78.56 | 17.68 | 15.67 ± 14.72 | 15.26 | 20.62 | 0.9047 | 18.7 |
+| **Adam (baseline)** | 80 (mini) | 80 | 0.1296 | 95.20 | 0.3438 | 86.37 | 0.5924 | 78.97 | 18.38 | 15.95 ± 14.58 | 14.77 | 22.32 | 0.9041 | 21.0 |
+| **Steepest Descent (Armijo)** | 80 (full) | 166 | 0.1253 | 95.34 | **0.3264** | 87.16 | **0.5359** | **81.03** | **16.21** | 14.75 ± 13.41 | 14.31 | 18.99 | **0.9144** | 43.2 |
+| **Block Coordinate Descent** | 240 (block) | 482 | 0.1217 | 95.39 | 0.3285 | 87.21 | 0.5455 | 80.88 | 16.27 | 14.87 ± 13.47 | 14.08 | **19.18** | 0.9140 | 103.4 |
+| **Conjugate Gradients (FR)** | 80 (full) | 167 | **0.0855** | **97.24** | 0.3510 | **87.34** | 0.6084 | 80.46 | 16.50 | **14.72 ± 13.42** | **12.78** | 20.56 | 0.9134 | 46.4 |
 
 ### 3.2. Chronological Per-Session EER Progression (`Sessions 5 -> 6 -> 7 -> 8`, Seeds 42–46, mean ± std)
 
@@ -188,11 +188,13 @@ Under **Protocol B (`strict_session`)**, where all four temporal splits occupy s
 
 | Optimization Method | Pooled EER, % (mean ± std [95% CI]) | Per-User EER, % (mean ± std [95% CI]) | FAR @ Val FRR=10%, % (mean ± std) | FRR @ Val FRR=10%, % (mean ± std) | ROC AUC (mean ± std) | Session 5 -> 6 -> 7 -> 8 EER, % (mean) | Paired ΔEER vs. FR-CG, pp (raw p) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 15.90 ± 0.58 [±0.73] | 13.71 ± 0.33 [±0.41] | 12.63 ± 0.70 | 20.12 ± 1.00 | 0.9215 ± 0.0044 | 11.49 -> 11.31 -> 15.05 -> 16.65 | +1.13 ± 0.93 (p = 0.0533) |
-| **Adam (baseline)** | 15.77 ± 0.53 [±0.66] | 13.81 ± 0.45 [±0.55] | 12.29 ± 0.50 | 20.38 ± 1.38 | 0.9215 ± 0.0027 | 11.53 -> 11.27 -> 14.95 -> 16.69 | **+1.01 ± 0.65 (p = 0.0261)** |
-| **Steepest Descent (Armijo)** | 15.77 ± 0.29 [±0.35] | 13.74 ± 0.39 [±0.49] | 11.88 ± 0.57 | 20.41 ± 0.91 | 0.9216 ± 0.0021 | 11.07 -> 11.25 -> 14.99 -> 16.43 | **+1.01 ± 0.72 (p = 0.0352)** |
-| **Block Coordinate Descent** | 15.46 ± 0.35 [±0.43] | 13.46 ± 0.39 [±0.49] | 11.69 ± 0.45 | 20.11 ± 0.89 | 0.9236 ± 0.0019 | 10.97 -> 11.09 -> 14.73 -> 16.12 | +0.69 ± 0.57 (p = 0.0545) |
-| **Conjugate Gradients (FR)** | **14.77 ± 0.58 [±0.72]** | **12.90 ± 0.65 [±0.81]** | **10.58 ± 0.78** | **19.63 ± 1.46** | **0.9293 ± 0.0030** | **10.36 -> 10.89 -> 14.10 -> 15.48** | — (Reference) |
+| **RMSprop (baseline)** | 15.90 ± 0.58 [±0.72] | 13.71 ± 0.33 [±0.42] | 12.63 ± 0.70 | 19.79 ± 0.38 | 0.9215 ± 0.0044 | 11.76 -> 11.52 -> 15.50 -> 16.27 | +1.13 ± 0.93 (p = 0.0533) |
+| **Adam (baseline)** | 15.77 ± 0.53 [±0.66] | 13.81 ± 0.45 [±0.56] | 12.29 ± 0.50 | 20.00 ± 0.81 | 0.9215 ± 0.0027 | 11.31 -> 11.56 -> 15.31 -> 16.18 | +1.01 ± 0.65 (p = 0.0261) |
+| **Steepest Descent (Armijo)** | 15.77 ± 0.29 [±0.36] | 13.74 ± 0.39 [±0.49] | 11.88 ± 0.57 | 19.98 ± 0.74 | 0.9216 ± 0.0021 | 11.47 -> 11.36 -> 15.28 -> 16.33 | +1.01 ± 0.72 (p = 0.0352) |
+| **Block Coordinate Descent** | 15.46 ± 0.35 [±0.44] | 13.46 ± 0.39 [±0.48] | 11.69 ± 0.45 | 19.92 ± 0.62 | 0.9236 ± 0.0019 | 11.20 -> 11.36 -> 14.79 -> 16.05 | +0.69 ± 0.57 (p = 0.0531) |
+| **Conjugate Gradients (FR)** | **14.77 ± 0.58 [±0.72]** | **12.90 ± 0.65 [±0.80]** | **10.58 ± 0.78** | **19.63 ± 1.46** | **0.9293 ± 0.0030** | **10.36 -> 10.89 -> 14.10 -> 15.48** | — (Reference) |
+
+*Note on significance:* in the strict protocol all raw paired $`p`$-values for Steepest Descent and Adam vs. FR-CG are below 0.05 (0.0352 and 0.0261), but after Holm–Bonferroni correction none of the four comparisons remains significant (Holm $`p`$ = 0.104–0.106). The strict-protocol advantage of FR-CG is therefore a consistent trend, not a corrected-significant result.
 
 ---
 
