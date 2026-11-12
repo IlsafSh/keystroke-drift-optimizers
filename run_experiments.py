@@ -11,6 +11,7 @@ Author: Ilsaf Sharibzhanov (Nortero)
 import argparse
 import json
 from pathlib import Path
+from typing import Tuple
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -211,13 +212,14 @@ def run_single_seed(
     batch_size: int,
     l2_reg: float = 0.009,
     include_adam: bool = False,
+    protocol: str = "within_session",
 ) -> dict:
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.set_num_threads(1)
 
     X_train, y_train, X_val, y_val, X_test, y_test, meta = prepare_concept_drift_dataset(
-        df, seed=seed, return_subjects=True
+        df, seed=seed, return_subjects=True, protocol=protocol
     )
     X_pre, y_pre = meta["pretrain_xy"]
     sess_splits = meta["sessions"]
@@ -234,14 +236,24 @@ def run_single_seed(
     input_dim = X_train.shape[1]
     torch.manual_seed(seed)
     init_model = BiometricMLP(input_dim)
-    # Pre-train base model w_0 on initial enrollment sessions (Sessions 1-4, rep <= 20)
+    _, _, pre_init_scores = evaluate_model(init_model, X_pre_t, y_pre_t)
+    pre_init_bio = compute_biometric_metrics(y_pre, pre_init_scores)
+
+    # Pre-train base model w_0 on initial enrollment split T0
     _, pretrain_stats = pretrain_base_model(
         init_model, X_pre_t, y_pre_t, steps=2, lr=0.12, l2_reg=l2_reg, return_metrics=True
     )
+    _, _, pre_post_scores = evaluate_model(init_model, X_pre_t, y_pre_t)
+    pre_post_bio = compute_biometric_metrics(y_pre, pre_post_scores)
+    pretrain_stats["pretrain_init_eer"] = float(pre_init_bio["eer"])
+    pretrain_stats["pretrain_post_eer"] = float(pre_post_bio["eer"])
+    pretrain_stats["protocol"] = protocol
+
     print(
-        f"[Seed {seed}] Base model w_0 pre-training on T0: "
+        f"[{protocol} | Seed {seed}] Base model w_0 pre-training on T0: "
         f"Loss {pretrain_stats['pretrain_init_loss']:.4f} -> {pretrain_stats['pretrain_post_loss']:.4f}, "
-        f"Acc {pretrain_stats['pretrain_init_acc'] * 100:.2f}% -> {pretrain_stats['pretrain_post_acc'] * 100:.2f}%"
+        f"Acc {pretrain_stats['pretrain_init_acc'] * 100:.2f}% -> {pretrain_stats['pretrain_post_acc'] * 100:.2f}%, "
+        f"EER {pretrain_stats['pretrain_init_eer'] * 100:.2f}% -> {pretrain_stats['pretrain_post_eer'] * 100:.2f}%"
     )
     base_state = {k: v.detach().clone() for k, v in init_model.state_dict().items()}
 
@@ -304,11 +316,15 @@ def run_single_seed(
             "session_eers": all_session_eers,
             "avg_epoch_ms": avg_epoch_ms,
             "total_grad_evals": hist["grad_evals"][-1] if hist.get("grad_evals") else 0,
+            "total_func_evals": hist["func_evals"][-1] if hist.get("func_evals") else 0,
+            "total_backtracking_steps": hist["backtracking_steps"][-1] if hist.get("backtracking_steps") else 0,
+            "grad_samples_processed": hist["grad_samples_processed"][-1] if hist.get("grad_samples_processed") else 0,
             "grad_eval_type": (
                 "block-wise (3 layers/sweep)"
                 if "Block Coordinate" in name
                 else ("mini-batch (B=1530)" if name in ("RMSprop", "Adam") else "full-batch (N=6120)")
             ),
+            "pretrain_stats": dict(pretrain_stats),
             "history": hist,
             "roc": {
                 "fpr": bio["fpr"],
@@ -319,6 +335,224 @@ def run_single_seed(
     return summary
 
 
+def run_multi_seed_protocol(
+    df: pd.DataFrame,
+    seeds: list,
+    epochs: int,
+    batch_size: int,
+    l2_reg: float,
+    include_adam: bool,
+    protocol: str,
+    cached_first_seed_summary: dict = None,
+    first_seed_val: int = 42,
+) -> Tuple[dict, dict, dict]:
+    from scipy import stats
+
+    multi_runs_by_seed = {}
+    first_sum = (
+        cached_first_seed_summary
+        if (cached_first_seed_summary is not None and seeds[0] == first_seed_val)
+        else run_single_seed(
+            df,
+            seed=seeds[0],
+            epochs=epochs,
+            batch_size=batch_size,
+            l2_reg=l2_reg,
+            include_adam=include_adam,
+            protocol=protocol,
+        )
+    )
+    multi_res = {k: [] for k in first_sum.keys()}
+
+    for s in seeds:
+        s_sum = (
+            first_sum
+            if s == seeds[0]
+            else run_single_seed(
+                df,
+                seed=s,
+                epochs=epochs,
+                batch_size=batch_size,
+                l2_reg=l2_reg,
+                include_adam=include_adam,
+                protocol=protocol,
+            )
+        )
+        multi_runs_by_seed[f"seed_{s}"] = {
+            k: {
+                m_key: s_sum[k][m_key]
+                for m_key in [
+                    "train_loss", "train_acc", "val_loss", "val_acc",
+                    "test_loss", "test_acc", "eer", "user_eer_mean", "user_eer_ci95",
+                    "far_05", "far_at_frr_10", "far_at_val_frr_10", "frr_at_val_frr_10",
+                    "roc_auc", "session_eers", "total_grad_evals", "total_func_evals",
+                    "total_backtracking_steps", "grad_samples_processed", "avg_epoch_ms",
+                    "pretrain_stats",
+                ]
+                if m_key in s_sum[k]
+            }
+            for k in s_sum
+        }
+        for k in multi_res:
+            multi_res[k].append(s_sum[k])
+
+    aggregate_stats = {}
+    n_s = len(seeds)
+    t_crit_seeds = student_t_quantile_95(n_s - 1)  # t_{0.975, 4} = 2.776445
+    ci_factor = t_crit_seeds / np.sqrt(n_s)
+
+    print(f"\n[{protocol}] Multi-Seed Statistical Summary (Seeds {seeds[0]}..{seeds[-1]}, Student-t df={n_s-1} 95% CI, t={t_crit_seeds:.4f}):")
+    for k, runs in multi_res.items():
+        eers = np.array([r["eer"] * 100.0 for r in runs])
+        ueers = np.array([r["user_eer_mean"] * 100.0 for r in runs])
+        fars = np.array([r["far_05"] * 100.0 for r in runs])
+        far10s = np.array([r["far_at_frr_10"] * 100.0 for r in runs])
+        far_val10s = np.array([r["far_at_val_frr_10"] * 100.0 for r in runs])
+        frr_val10s = np.array([r["frr_at_val_frr_10"] * 100.0 for r in runs])
+        aucs = np.array([r["roc_auc"] for r in runs])
+        fevals = np.array([r["total_func_evals"] for r in runs], dtype=np.float64)
+        bt_steps = np.array([r["total_backtracking_steps"] for r in runs], dtype=np.float64)
+        epoch_ms = np.array([r["avg_epoch_ms"] for r in runs], dtype=np.float64)
+
+        sess_agg = {}
+        for s_idx in (5, 6, 7, 8):
+            s_key = f"session_{s_idx}"
+            s_vals = np.array([r["session_eers"].get(s_key, 0.0) * 100.0 for r in runs])
+            sess_agg[s_key] = {
+                "mean_pct": float(np.mean(s_vals)),
+                "std_pct": float(np.std(s_vals, ddof=1)),
+                "ci95_pct": float(ci_factor * np.std(s_vals, ddof=1)),
+            }
+        s5_vals = np.array([r["session_eers"].get("session_5", 0.0) * 100.0 for r in runs])
+        s8_vals = np.array([r["session_eers"].get("session_8", 0.0) * 100.0 for r in runs])
+        drift_deg = s8_vals - s5_vals
+        sess_agg["drift_degradation_s5_to_s8"] = {
+            "mean_pct": float(np.mean(drift_deg)),
+            "std_pct": float(np.std(drift_deg, ddof=1)),
+            "ci95_pct": float(ci_factor * np.std(drift_deg, ddof=1)),
+        }
+
+        aggregate_stats[k] = {
+            "eer_mean_pct": float(np.mean(eers)),
+            "eer_std_pct": float(np.std(eers, ddof=1)),
+            "eer_ci95_pct": float(ci_factor * np.std(eers, ddof=1)),
+            "user_eer_mean_pct": float(np.mean(ueers)),
+            "user_eer_std_pct": float(np.std(ueers, ddof=1)),
+            "user_eer_ci95_pct": float(ci_factor * np.std(ueers, ddof=1)),
+            "far_05_mean_pct": float(np.mean(fars)),
+            "far_05_std_pct": float(np.std(fars, ddof=1)),
+            "far_at_frr_10_mean_pct": float(np.mean(far10s)),
+            "far_at_frr_10_std_pct": float(np.std(far10s)),
+            "far_at_val_frr_10_mean_pct": float(np.mean(far_val10s)),
+            "far_at_val_frr_10_std_pct": float(np.std(far_val10s)),
+            "far_at_val_frr_10_ci95_pct": float(ci_factor * np.std(far_val10s, ddof=1)),
+            "frr_at_val_frr_10_mean_pct": float(np.mean(frr_val10s)),
+            "frr_at_val_frr_10_std_pct": float(np.std(frr_val10s)),
+            "frr_at_val_frr_10_ci95_pct": float(ci_factor * np.std(frr_val10s, ddof=1)),
+            "roc_auc_mean": float(np.mean(aucs)),
+            "roc_auc_std": float(np.std(aucs, ddof=1)),
+            "roc_auc_ci95": float(ci_factor * np.std(aucs, ddof=1)),
+            "session_eers_aggregate": sess_agg,
+            "total_grad_evals": int(runs[0]["total_grad_evals"]),
+            "total_func_evals_mean": float(np.mean(fevals)),
+            "total_backtracking_steps_mean": float(np.mean(bt_steps)),
+            "grad_samples_processed": int(runs[0]["grad_samples_processed"]),
+            "avg_epoch_ms_mean": float(np.mean(epoch_ms)),
+            "student_t_df": int(n_s - 1),
+            "student_t_crit_95": float(t_crit_seeds),
+        }
+        st = aggregate_stats[k]
+        print(
+            f"  {k:28s} | EER: {st['eer_mean_pct']:.2f} +/- {st['eer_std_pct']:.2f}% "
+            f"(95% CI: +/-{st['eer_ci95_pct']:.2f}%) | "
+            f"UserEER: {st['user_eer_mean_pct']:.2f} +/- {st['user_eer_std_pct']:.2f}% | "
+            f"FAR@Val10: {st['far_at_val_frr_10_mean_pct']:.2f} +/- {st['far_at_val_frr_10_std_pct']:.2f}% | "
+            f"FRR@Val10: {st['frr_at_val_frr_10_mean_pct']:.2f} +/- {st['frr_at_val_frr_10_std_pct']:.2f}% | "
+            f"AUC: {st['roc_auc_mean']:.4f} +/- {st['roc_auc_std']:.4f}"
+        )
+    print()
+
+    print(f"[{protocol}] Multi-Seed Per-Session EER (mean +/- std across 5 seeds):")
+    for k, st in aggregate_stats.items():
+        sa = st["session_eers_aggregate"]
+        print(
+            f"  {k:28s} | S5: {sa['session_5']['mean_pct']:.2f}+/-{sa['session_5']['std_pct']:.2f}% | "
+            f"S6: {sa['session_6']['mean_pct']:.2f}+/-{sa['session_6']['std_pct']:.2f}% | "
+            f"S7: {sa['session_7']['mean_pct']:.2f}+/-{sa['session_7']['std_pct']:.2f}% | "
+            f"S8: {sa['session_8']['mean_pct']:.2f}+/-{sa['session_8']['std_pct']:.2f}% | "
+            f"Drift(S8-S5): +{sa['drift_degradation_s5_to_s8']['mean_pct']:.2f}+/-{sa['drift_degradation_s5_to_s8']['std_pct']:.2f} pp"
+        )
+    print()
+
+    # Paired seed-by-seed comparison against Fletcher-Reeves Conjugate Gradients
+    ref_key = "Conjugate Gradients (FR)"
+    paired_comparisons = {}
+    if ref_key in multi_res:
+        ref_eers = np.array([r["eer"] * 100.0 for r in multi_res[ref_key]])
+        ref_ueers = np.array([r["user_eer_mean"] * 100.0 for r in multi_res[ref_key]])
+        print(f"[{protocol}] Paired Differences vs. Conjugate Gradients (FR) (d_i = EER_method,i - EER_FR,i):")
+
+        temp_comps = []
+        for k, runs in multi_res.items():
+            if k == ref_key:
+                continue
+            k_eers = np.array([r["eer"] * 100.0 for r in runs])
+            k_ueers = np.array([r["user_eer_mean"] * 100.0 for r in runs])
+            diff_eer = k_eers - ref_eers
+            diff_ueer = k_ueers - ref_ueers
+            mean_d = float(np.mean(diff_eer))
+            std_d = float(np.std(diff_eer, ddof=1))
+            ci_d = float(ci_factor * std_d)
+            t_stat = float(mean_d / (std_d / np.sqrt(n_s) + 1e-12))
+            p_val = 2.0 * float(stats.t.sf(abs(t_stat), df=n_s - 1))
+            temp_comps.append({
+                "method": k,
+                "diff_eer": diff_eer,
+                "mean_d": mean_d,
+                "std_d": std_d,
+                "ci_d": ci_d,
+                "mean_ueer": float(np.mean(diff_ueer)),
+                "std_ueer": float(np.std(diff_ueer, ddof=1)),
+                "t_stat": t_stat,
+                "p_val": p_val,
+            })
+
+        # Holm-Bonferroni step-down correction
+        m_tests = len(temp_comps)
+        sorted_indices = np.argsort([c["p_val"] for c in temp_comps])
+        running_max = 0.0
+        holm_p_vals = [0.0] * m_tests
+        for rank, idx in enumerate(sorted_indices):
+            mult = m_tests - rank
+            p_adj = min(1.0, temp_comps[idx]["p_val"] * mult)
+            running_max = max(running_max, p_adj)
+            holm_p_vals[idx] = min(1.0, running_max)
+
+        for idx, c in enumerate(temp_comps):
+            c["p_holm"] = holm_p_vals[idx]
+            k = c["method"]
+            paired_comparisons[f"{k} vs {ref_key}"] = {
+                "paired_eer_diffs_pct": [float(x) for x in c["diff_eer"]],
+                "mean_delta_eer_pct": c["mean_d"],
+                "std_delta_eer_pct": c["std_d"],
+                "ci95_delta_eer_pct": c["ci_d"],
+                "mean_delta_user_eer_pct": c["mean_ueer"],
+                "std_delta_user_eer_pct": c["std_ueer"],
+                "paired_t_stat": c["t_stat"],
+                "p_value_raw": c["p_val"],
+                "p_value_holm": c["p_holm"],
+                "df": n_s - 1,
+            }
+            print(
+                f"  {k:28s} - FR-CG | dEER: +{c['mean_d']:.2f} +/- {c['std_d']:.2f}% "
+                f"(95% CI: +/-{c['ci_d']:.2f}%, t={c['t_stat']:.2f}, p={c['p_val']:.4f}, p_holm={c['p_holm']:.4f}) | "
+                f"dUserEER: +{c['mean_ueer']:.2f}%"
+            )
+        print()
+
+    return multi_runs_by_seed, aggregate_stats, paired_comparisons
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run Keystroke Drift Optimization Benchmark")
     parser.add_argument("--data", type=str, default=str(DATA_PATH), help="Path to DSL-StrongPasswordData.csv")
@@ -326,6 +560,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=20, help="Number of adaptation epochs")
     parser.add_argument("--batch-size", type=int, default=1530, help="Batch size for stochastic baselines (1530 = 4 updates/epoch)")
     parser.add_argument("--l2-reg", type=float, default=0.009, help="Uniform L2 regularization coefficient")
+    parser.add_argument("--protocol", type=str, default="within_session", choices=["within_session", "strict_session"], help="Temporal split protocol")
     parser.add_argument("--include-adam", action="store_true", help="Include Adam optimizer in benchmark table")
     parser.add_argument("--multi-seed", action="store_true", help="Evaluate and persist mean +/- std across 5 seeds (42..46)")
     args = parser.parse_args()
@@ -340,14 +575,15 @@ def main():
         batch_size=args.batch_size,
         l2_reg=args.l2_reg,
         include_adam=args.include_adam,
+        protocol=args.protocol,
     )
 
-    print("\n" + "=" * 126)
+    print("\n" + "=" * 136)
     print(
         f"{'Method':28s} | {'TrLoss':6s} {'TrAcc,%':7s} | {'ValLoss':7s} {'ValAcc,%':8s} | "
-        f"{'TeLoss':6s} {'TeAcc,%':7s} | {'EER,%':5s} {'UsrEER':6s} {'FAR,%':5s} {'FAR@Val10':9s} {'AUC':6s} | {'GradEv':6s} {'Time,ms':7s}"
+        f"{'TeLoss':6s} {'TeAcc,%':7s} | {'EER,%':5s} {'UsrEER':6s} {'FAR,%':5s} {'FAR@Val10':9s} {'FRR@Val10':9s} {'AUC':6s} | {'GradEv':6s} {'FuncEv':6s} {'Time,ms':7s}"
     )
-    print("=" * 126)
+    print("=" * 136)
 
     for name, res in summary.items():
         print(
@@ -355,9 +591,10 @@ def main():
             f"{res['val_loss']:.4f} {res['val_acc']*100:7.2f}% | "
             f"{res['test_loss']:.4f} {res['test_acc']*100:6.2f}% | "
             f"{res['eer']*100:5.2f}% {res['user_eer_mean']*100:5.2f}% {res['far_05']*100:5.2f}% "
-            f"{res['far_at_val_frr_10']*100:8.2f}% {res['roc_auc']:.4f} | {res['total_grad_evals']:6d} {res['avg_epoch_ms']:7.1f}"
+            f"{res['far_at_val_frr_10']*100:8.2f}% {res['frr_at_val_frr_10']*100:8.2f}% {res['roc_auc']:.4f} | "
+            f"{res['total_grad_evals']:6d} {res['total_func_evals']:6d} {res['avg_epoch_ms']:7.1f}"
         )
-    print("=" * 126 + "\n")
+    print("=" * 136 + "\n")
 
     print("Chronological Per-Session EER Progression (Sessions 5 -> 6 -> 7 -> 8):")
     for name, res in summary.items():
@@ -369,166 +606,67 @@ def main():
     print()
 
     output_payload = dict(summary)
+    output_payload["pretrain_stats"] = dict(summary["RMSprop"]["pretrain_stats"])
     output_payload["experiment_config"] = {
         "seed": args.seed,
         "epochs": args.epochs,
         "batch_size": args.batch_size,
         "uniform_l2_reg": args.l2_reg,
-        "protocol": (
-            "Two-tier Causal Protocol: Within-session split (S1-4, rep<=20 pretrain w_0, "
-            "21<=rep<=35 adapt, single scaler_pre) -> Forward Val (S5-6) -> Delayed Test (S7-8)"
+        "primary_protocol": (
+            "Within-Session Enrollment/Adaptation Split with Forward Session Evaluation: "
+            "T0 Pretrain/Enrollment (Sessions 1-4, rep<=20, N=8160, single scaler_pre) -> "
+            "T1 Adaptation (Sessions 1-4, 21<=rep<=35, N=6120) -> "
+            "T2 Validation (Sessions 5-6, N=6120) -> T3 Test (Sessions 7-8, N=6120)"
         ),
-        "scaler": "Fixed enrollment scaler_pre fit strictly on pretrain (rep<=20)",
+        "secondary_protocol": (
+            "Strict Session-Sequential Causal Protocol (T0 < T1 < T2 < T3): "
+            "T0 Pretrain/Enrollment (Sessions 1-2, rep<=40, N=8160, single scaler_pre) -> "
+            "T1 Adaptation (Sessions 3-4, 21<=rep<=50, N=6120) -> "
+            "T2 Validation (Sessions 5-6, N=6120) -> T3 Test (Sessions 7-8, N=6120)"
+        ),
+        "scaler": "Fixed enrollment scaler_pre fit strictly on T0 pretrain split",
         "model_architecture": "BiometricMLP (338 -> 16 [ReLU] -> 16 [ReLU] -> 1 [Logits], 5,713 params)",
     }
 
     if args.multi_seed:
         seeds = [42, 43, 44, 45, 46]
-        multi_runs_by_seed = {}
-        multi_res = {k: [] for k in summary.keys()}
-        for s in seeds:
-            s_sum = (
-                summary
-                if s == args.seed
-                else run_single_seed(
-                    df,
-                    seed=s,
-                    epochs=args.epochs,
-                    batch_size=args.batch_size,
-                    l2_reg=args.l2_reg,
-                    include_adam=args.include_adam,
-                )
-            )
-            multi_runs_by_seed[f"seed_{s}"] = {
-                k: {
-                    m_key: s_sum[k][m_key]
-                    for m_key in [
-                        "train_loss", "train_acc", "val_loss", "val_acc",
-                        "test_loss", "test_acc", "eer", "user_eer_mean", "user_eer_ci95",
-                        "far_05", "far_at_frr_10", "far_at_val_frr_10", "frr_at_val_frr_10",
-                        "roc_auc", "session_eers", "total_grad_evals", "avg_epoch_ms",
-                        "pretrain_stats",
-                    ]
-                    if m_key in s_sum[k]
-                }
-                for k in s_sum
-            }
-            for k in multi_res:
-                multi_res[k].append(s_sum[k])
-
-        aggregate_stats = {}
-        n_s = len(seeds)
-        t_crit_seeds = student_t_quantile_95(n_s - 1)  # t_{0.975, 4} = 2.776445
-        ci_factor = t_crit_seeds / np.sqrt(n_s)
-
-        print(f"Multi-Seed Statistical Summary (Seeds 42..46, Student-t df={n_s-1} 95% CI, t={t_crit_seeds:.4f}):")
-        for k, runs in multi_res.items():
-            eers = np.array([r["eer"] * 100.0 for r in runs])
-            ueers = np.array([r["user_eer_mean"] * 100.0 for r in runs])
-            fars = np.array([r["far_05"] * 100.0 for r in runs])
-            far10s = np.array([r["far_at_frr_10"] * 100.0 for r in runs])
-            far_val10s = np.array([r["far_at_val_frr_10"] * 100.0 for r in runs])
-            aucs = np.array([r["roc_auc"] for r in runs])
-
-            aggregate_stats[k] = {
-                "eer_mean_pct": float(np.mean(eers)),
-                "eer_std_pct": float(np.std(eers, ddof=1)),
-                "eer_ci95_pct": float(ci_factor * np.std(eers, ddof=1)),
-                "user_eer_mean_pct": float(np.mean(ueers)),
-                "user_eer_std_pct": float(np.std(ueers, ddof=1)),
-                "user_eer_ci95_pct": float(ci_factor * np.std(ueers, ddof=1)),
-                "far_05_mean_pct": float(np.mean(fars)),
-                "far_05_std_pct": float(np.std(fars, ddof=1)),
-                "far_at_frr_10_mean_pct": float(np.mean(far10s)),
-                "far_at_frr_10_std_pct": float(np.std(far10s)),
-                "far_at_val_frr_10_mean_pct": float(np.mean(far_val10s)),
-                "far_at_val_frr_10_std_pct": float(np.std(far_val10s)),
-                "roc_auc_mean": float(np.mean(aucs)),
-                "roc_auc_std": float(np.std(aucs, ddof=1)),
-                "roc_auc_ci95": float(ci_factor * np.std(aucs, ddof=1)),
-                "student_t_df": int(n_s - 1),
-                "student_t_crit_95": float(t_crit_seeds),
-            }
-            st = aggregate_stats[k]
-            print(
-                f"  {k:28s} | EER: {st['eer_mean_pct']:.2f} +/- {st['eer_std_pct']:.2f}% "
-                f"(95% CI: +/-{st['eer_ci95_pct']:.2f}%) | "
-                f"UserEER: {st['user_eer_mean_pct']:.2f} +/- {st['user_eer_std_pct']:.2f}% | "
-                f"FAR: {st['far_05_mean_pct']:.2f} +/- {st['far_05_std_pct']:.2f}% | "
-                f"AUC: {st['roc_auc_mean']:.4f} +/- {st['roc_auc_std']:.4f}"
-            )
-        print()
-
-        # Paired seed-by-seed comparison against Fletcher-Reeves Conjugate Gradients
-        from scipy import stats
-        ref_key = "Conjugate Gradients (FR)"
-        paired_comparisons = {}
-        if ref_key in multi_res:
-            ref_eers = np.array([r["eer"] * 100.0 for r in multi_res[ref_key]])
-            ref_ueers = np.array([r["user_eer_mean"] * 100.0 for r in multi_res[ref_key]])
-            print("Paired Seed-by-Seed Differences vs. Conjugate Gradients (FR) (d_i = EER_method,i - EER_FR,i):")
-
-            temp_comps = []
-            for k, runs in multi_res.items():
-                if k == ref_key:
-                    continue
-                k_eers = np.array([r["eer"] * 100.0 for r in runs])
-                k_ueers = np.array([r["user_eer_mean"] * 100.0 for r in runs])
-                diff_eer = k_eers - ref_eers
-                diff_ueer = k_ueers - ref_ueers
-                mean_d = float(np.mean(diff_eer))
-                std_d = float(np.std(diff_eer, ddof=1))
-                ci_d = float(ci_factor * std_d)
-                t_stat = float(mean_d / (std_d / np.sqrt(n_s) + 1e-12))
-                p_val = 2.0 * float(stats.t.sf(abs(t_stat), df=n_s - 1))
-                temp_comps.append({
-                    "method": k,
-                    "diff_eer": diff_eer,
-                    "mean_d": mean_d,
-                    "std_d": std_d,
-                    "ci_d": ci_d,
-                    "mean_ueer": float(np.mean(diff_ueer)),
-                    "std_ueer": float(np.std(diff_ueer, ddof=1)),
-                    "t_stat": t_stat,
-                    "p_val": p_val,
-                })
-
-            # Holm-Bonferroni step-down correction
-            m_tests = len(temp_comps)
-            sorted_indices = np.argsort([c["p_val"] for c in temp_comps])
-            running_max = 0.0
-            holm_p_vals = [0.0] * m_tests
-            for rank, idx in enumerate(sorted_indices):
-                mult = m_tests - rank
-                p_adj = min(1.0, temp_comps[idx]["p_val"] * mult)
-                running_max = max(running_max, p_adj)
-                holm_p_vals[idx] = min(1.0, running_max)
-
-            for idx, c in enumerate(temp_comps):
-                c["p_holm"] = holm_p_vals[idx]
-                k = c["method"]
-                paired_comparisons[f"{k} vs {ref_key}"] = {
-                    "paired_eer_diffs_pct": [float(x) for x in c["diff_eer"]],
-                    "mean_delta_eer_pct": c["mean_d"],
-                    "std_delta_eer_pct": c["std_d"],
-                    "ci95_delta_eer_pct": c["ci_d"],
-                    "mean_delta_user_eer_pct": c["mean_ueer"],
-                    "std_delta_user_eer_pct": c["std_ueer"],
-                    "paired_t_stat": c["t_stat"],
-                    "p_value_raw": c["p_val"],
-                    "p_value_holm": c["p_holm"],
-                    "df": n_s - 1,
-                }
-                print(
-                    f"  {k:28s} - FR-CG | dEER: +{c['mean_d']:.2f} +/- {c['std_d']:.2f}% "
-                    f"(95% CI: +/-{c['ci_d']:.2f}%, t={c['t_stat']:.2f}, p={c['p_val']:.4f}, p_holm={c['p_holm']:.4f}) | "
-                    f"dUserEER: +{c['mean_ueer']:.2f}%"
-                )
-            print()
-
+        multi_runs_by_seed, aggregate_stats, paired_comparisons = run_multi_seed_protocol(
+            df=df,
+            seeds=seeds,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            l2_reg=args.l2_reg,
+            include_adam=args.include_adam,
+            protocol=args.protocol,
+            cached_first_seed_summary=summary,
+            first_seed_val=args.seed,
+        )
         output_payload["multi_seed_runs"] = multi_runs_by_seed
         output_payload["multi_seed_aggregate"] = aggregate_stats
         output_payload["paired_comparisons_vs_fr_cg"] = paired_comparisons
+
+        # Also evaluate the strict session-sequential protocol (Sessions 1-2 -> 3-4 -> 5-6 -> 7-8)
+        strict_runs, strict_agg, strict_paired = run_multi_seed_protocol(
+            df=df,
+            seeds=seeds,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            l2_reg=args.l2_reg,
+            include_adam=args.include_adam,
+            protocol="strict_session",
+            cached_first_seed_summary=None,
+            first_seed_val=args.seed,
+        )
+        output_payload["strict_session_protocol_benchmark"] = {
+            "description": (
+                "Strict Session-Sequential Causal Protocol (T0 < T1 < T2 < T3): "
+                "T0 = Sessions 1-2 (rep<=40, N=8160), T1 = Sessions 3-4 (rep 21..50, N=6120), "
+                "T2 = Sessions 5-6 (rep 21..50, N=6120), T3 = Sessions 7-8 (rep 21..50, N=6120)"
+            ),
+            "multi_seed_runs": strict_runs,
+            "multi_seed_aggregate": strict_agg,
+            "paired_comparisons_vs_fr_cg": strict_paired,
+        }
 
     with open(RESULTS_JSON, "w", encoding="utf-8") as f:
         json.dump(output_payload, f, ensure_ascii=False, indent=2)

@@ -115,7 +115,9 @@ def armijo_line_search_full(
     rho: float = 0.5,
     max_iters: int = 20,
     l2_reg: float = 0.009,
-) -> float:
+    return_stats: bool = False,
+    f_w: float = None,
+) -> Union[float, Tuple[float, int, int]]:
     """
     Backtracking line search satisfying the Armijo sufficient decrease condition:
         f(w + alpha * p) <= f(w) + c * alpha * <grad, p>
@@ -126,27 +128,33 @@ def armijo_line_search_full(
     """
     params = list(model.parameters())
     orig_params = [p.detach().clone() for p in params]
+    ls_func_evals = 0
+    bt_halvings = 0
 
     with torch.no_grad():
-        f_w = float(bce_loss(model, x_batch, y_batch, l2_reg=l2_reg).item())
+        if f_w is None:
+            f_w = float(bce_loss(model, x_batch, y_batch, l2_reg=l2_reg).item())
+            ls_func_evals += 1
         grad_dot_p = sum(float(torch.sum(g * d).item()) for g, d in zip(grads, direction))
         if grad_dot_p >= -1e-12:
-            return 0.0
+            return (0.0, ls_func_evals, bt_halvings) if return_stats else 0.0
 
         alpha = initial_alpha
         for _ in range(max_iters):
             for p, orig, d in zip(params, orig_params, direction):
                 p.copy_(orig + alpha * d)
             f_new = float(bce_loss(model, x_batch, y_batch, l2_reg=l2_reg).item())
+            ls_func_evals += 1
             if f_new <= f_w + c * alpha * grad_dot_p:
                 for p, orig in zip(params, orig_params):
                     p.copy_(orig)
-                return alpha
+                return (alpha, ls_func_evals, bt_halvings) if return_stats else alpha
             alpha *= rho
+            bt_halvings += 1
 
         for p, orig in zip(params, orig_params):
             p.copy_(orig)
-        return 0.0
+        return (0.0, ls_func_evals, bt_halvings) if return_stats else 0.0
 
 
 def train_rmsprop(
@@ -168,9 +176,13 @@ def train_rmsprop(
     optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, alpha=0.9)
     gen = torch.Generator().manual_seed(seed)
     history: Dict[str, list] = {
-        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [], "epoch_time_ms": [], "grad_evals": []
+        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [],
+        "epoch_time_ms": [], "grad_evals": [], "func_evals": [],
+        "backtracking_steps": [], "grad_samples_processed": [],
     }
     grad_count = 0
+    func_count = 0
+    samples_count = 0
 
     for _ in range(epochs):
         t0 = time.perf_counter()
@@ -181,6 +193,8 @@ def train_rmsprop(
             loss.backward()
             optimizer.step()
             grad_count += 1
+            func_count += 1
+            samples_count += int(len(xb))
         dt_ms = (time.perf_counter() - t0) * 1000.0
 
         tr_loss, tr_acc, _ = evaluate_model(model, X_train, y_train)
@@ -191,6 +205,9 @@ def train_rmsprop(
         history["val_accuracy"].append(vl_acc)
         history["epoch_time_ms"].append(dt_ms)
         history["grad_evals"].append(grad_count)
+        history["func_evals"].append(func_count)
+        history["backtracking_steps"].append(0)
+        history["grad_samples_processed"].append(samples_count)
 
     return history
 
@@ -214,9 +231,13 @@ def train_adam(
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     gen = torch.Generator().manual_seed(seed)
     history: Dict[str, list] = {
-        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [], "epoch_time_ms": [], "grad_evals": []
+        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [],
+        "epoch_time_ms": [], "grad_evals": [], "func_evals": [],
+        "backtracking_steps": [], "grad_samples_processed": [],
     }
     grad_count = 0
+    func_count = 0
+    samples_count = 0
 
     for _ in range(epochs):
         t0 = time.perf_counter()
@@ -227,6 +248,8 @@ def train_adam(
             loss.backward()
             optimizer.step()
             grad_count += 1
+            func_count += 1
+            samples_count += int(len(xb))
         dt_ms = (time.perf_counter() - t0) * 1000.0
 
         tr_loss, tr_acc, _ = evaluate_model(model, X_train, y_train)
@@ -237,6 +260,9 @@ def train_adam(
         history["val_accuracy"].append(vl_acc)
         history["epoch_time_ms"].append(dt_ms)
         history["grad_evals"].append(grad_count)
+        history["func_evals"].append(func_count)
+        history["backtracking_steps"].append(0)
+        history["grad_samples_processed"].append(samples_count)
 
     return history
 
@@ -257,10 +283,15 @@ def train_steepest_descent_armijo(
     along the true unscaled negative gradient p_k = -nabla f(w_k).
     """
     history: Dict[str, list] = {
-        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [], "epoch_time_ms": [], "grad_evals": []
+        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [],
+        "epoch_time_ms": [], "grad_evals": [], "func_evals": [],
+        "backtracking_steps": [], "grad_samples_processed": [],
     }
     params = list(model.parameters())
     grad_count = 0
+    func_count = 0
+    bt_count = 0
+    n_samples = int(len(X_train))
 
     for _ in range(epochs):
         t0 = time.perf_counter()
@@ -270,10 +301,11 @@ def train_steepest_descent_armijo(
             loss = bce_loss(model, X_train, y_train, l2_reg=l2_reg)
             loss.backward()
             grad_count += 1
+            func_count += 1
             grads = [p.grad.detach().clone() for p in params]
             direction = [-g for g in grads]
 
-            alpha = armijo_line_search_full(
+            alpha, ls_evals, ls_bt = armijo_line_search_full(
                 model,
                 X_train,
                 y_train,
@@ -283,7 +315,11 @@ def train_steepest_descent_armijo(
                 c=1e-4,
                 rho=0.5,
                 l2_reg=l2_reg,
+                return_stats=True,
+                f_w=float(loss.item()),
             )
+            func_count += ls_evals
+            bt_count += ls_bt
             if alpha > 0.0:
                 with torch.no_grad():
                     for p, d in zip(params, direction):
@@ -298,6 +334,9 @@ def train_steepest_descent_armijo(
         history["val_accuracy"].append(vl_acc)
         history["epoch_time_ms"].append(dt_ms)
         history["grad_evals"].append(grad_count)
+        history["func_evals"].append(func_count)
+        history["backtracking_steps"].append(bt_count)
+        history["grad_samples_processed"].append(grad_count * n_samples)
 
     return history
 
@@ -322,6 +361,7 @@ def train_block_coordinate_descent_armijo(
     history: Dict[str, list] = {
         "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [],
         "epoch_time_ms": [], "grad_evals": [], "full_sweeps": [],
+        "func_evals": [], "backtracking_steps": [], "grad_samples_processed": [],
     }
     if hasattr(model, "layer_blocks"):
         blocks: List[List[nn.Parameter]] = model.layer_blocks()
@@ -331,6 +371,9 @@ def train_block_coordinate_descent_armijo(
     all_params = list(model.parameters())
     grad_count = 0
     sweep_count = 0
+    func_count = 0
+    bt_count = 0
+    n_samples = int(len(X_train))
 
     for _ in range(epochs):
         t0 = time.perf_counter()
@@ -345,6 +388,7 @@ def train_block_coordinate_descent_armijo(
                 f_w_tensor = bce_loss(model, X_train, y_train, l2_reg=l2_reg)
                 f_w_tensor.backward()
                 grad_count += 1
+                func_count += 1
                 grads = [p.grad.detach().clone() for p in block]
                 f_w = float(f_w_tensor.item())
                 grad_dot_p = -sum(float(torch.sum(g * g).item()) for g in grads)
@@ -359,10 +403,12 @@ def train_block_coordinate_descent_armijo(
                         for p, orig, g in zip(block, orig_block, grads):
                             p.copy_(orig - alpha * g)
                         f_new = float(bce_loss(model, X_train, y_train, l2_reg=l2_reg).item())
+                        func_count += 1
                         if f_new <= f_w + 1e-4 * alpha * grad_dot_p:
                             accepted = True
                             break
                         alpha *= 0.5
+                        bt_count += 1
                     if not accepted:
                         for p, orig in zip(block, orig_block):
                             p.copy_(orig)
@@ -379,6 +425,9 @@ def train_block_coordinate_descent_armijo(
         history["epoch_time_ms"].append(dt_ms)
         history["grad_evals"].append(grad_count)
         history["full_sweeps"].append(sweep_count)
+        history["func_evals"].append(func_count)
+        history["backtracking_steps"].append(bt_count)
+        history["grad_samples_processed"].append(grad_count * n_samples)
 
     return history
 
@@ -404,13 +453,18 @@ def train_conjugate_gradient_fletcher_reeves(
     and periodic restarts to the negative gradient direction.
     """
     history: Dict[str, list] = {
-        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [], "epoch_time_ms": [], "grad_evals": []
+        "loss": [], "accuracy": [], "val_loss": [], "val_accuracy": [],
+        "epoch_time_ms": [], "grad_evals": [], "func_evals": [],
+        "backtracking_steps": [], "grad_samples_processed": [],
     }
     params = list(model.parameters())
     prev_grads = None
     prev_dirs = None
     step_count = 0
     grad_count = 0
+    func_count = 0
+    bt_count = 0
+    n_samples = int(len(X_train))
 
     for _ in range(epochs):
         t0 = time.perf_counter()
@@ -420,6 +474,7 @@ def train_conjugate_gradient_fletcher_reeves(
             loss = bce_loss(model, X_train, y_train, l2_reg=l2_reg)
             loss.backward()
             grad_count += 1
+            func_count += 1
             grads = [p.grad.detach().clone() for p in params]
 
             if prev_grads is None or prev_dirs is None or (step_count % restart_every == 0):
@@ -435,7 +490,7 @@ def train_conjugate_gradient_fletcher_reeves(
                 if grad_dot_p >= -1e-12:
                     direction = [-g for g in grads]
 
-            alpha = armijo_line_search_full(
+            alpha, ls_evals, ls_bt = armijo_line_search_full(
                 model,
                 X_train,
                 y_train,
@@ -445,10 +500,14 @@ def train_conjugate_gradient_fletcher_reeves(
                 c=1e-4,
                 rho=0.5,
                 l2_reg=l2_reg,
+                return_stats=True,
+                f_w=float(loss.item()),
             )
+            func_count += ls_evals
+            bt_count += ls_bt
             if alpha == 0.0:
                 direction = [-g for g in grads]
-                alpha = armijo_line_search_full(
+                alpha, ls_evals2, ls_bt2 = armijo_line_search_full(
                     model,
                     X_train,
                     y_train,
@@ -458,7 +517,11 @@ def train_conjugate_gradient_fletcher_reeves(
                     c=1e-4,
                     rho=0.5,
                     l2_reg=l2_reg,
+                    return_stats=True,
+                    f_w=float(loss.item()),
                 )
+                func_count += ls_evals2
+                bt_count += ls_bt2
 
             if alpha > 0.0:
                 with torch.no_grad():
@@ -481,5 +544,8 @@ def train_conjugate_gradient_fletcher_reeves(
         history["val_accuracy"].append(vl_acc)
         history["epoch_time_ms"].append(dt_ms)
         history["grad_evals"].append(grad_count)
+        history["func_evals"].append(func_count)
+        history["backtracking_steps"].append(bt_count)
+        history["grad_samples_processed"].append(grad_count * n_samples)
 
     return history

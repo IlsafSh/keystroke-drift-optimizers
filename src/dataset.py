@@ -119,12 +119,16 @@ def sample_stratified_impostors(
     subject: str,
     target_df: pd.DataFrame,
     base_seed: int,
+    strict: bool = True,
 ) -> pd.DataFrame:
     """
     Samples negative (impostor) observations from other subjects (subject != `subject`)
     with exact 1-to-1 matching for each (sessionIndex, rep) pair present in `target_df`.
-    Guarantees that the empirical marginal distributions of sessionIndex and rep are
-    100% identical between genuine and impostor classes.
+    Guarantees that both the marginal and joint 2D distributions of (sessionIndex, rep)
+    are 100% identical between genuine and impostor classes.
+
+    If `strict=True` (default), raises a ValueError if any required (sessionIndex, rep)
+    combination is missing from `pool_df` for other subjects.
     """
     pool_sub = pool_df[pool_df["subject"] != subject]
     idx_dict = pool_sub.groupby(["sessionIndex", "rep"]).groups
@@ -134,7 +138,14 @@ def sample_stratified_impostors(
         k = len(grp)
         pool_idx = idx_dict.get((sess_id, rep_val))
         if pool_idx is None or len(pool_idx) == 0:
+            if strict:
+                raise ValueError(
+                    f"Strict stratification violated: no impostor candidates found for "
+                    f"subject != {subject} at (sessionIndex={sess_id}, rep={rep_val})."
+                )
             pool_idx = pool_sub[pool_sub["sessionIndex"] == sess_id].index.values
+            if len(pool_idx) == 0:
+                raise ValueError(f"No impostor candidates found in sessionIndex={sess_id}.")
         rng = np.random.default_rng(int((base_seed + int(sess_id) * 1000 + int(rep_val) * 7) % (2**31 - 1)))
         chosen = rng.choice(pool_idx, size=k, replace=len(pool_idx) < k)
         sampled_indices.extend(chosen)
@@ -146,6 +157,7 @@ def prepare_concept_drift_dataset(
     csv_path_or_df: Union[str, Path, pd.DataFrame],
     seed: int = 42,
     return_subjects: bool = False,
+    protocol: str = "within_session",
 ) -> Union[
     Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray],
     Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, Dict[str, Any]],
@@ -153,21 +165,25 @@ def prepare_concept_drift_dataset(
     """
     Constructs the binary verification dataset from the CMU Keystroke Dynamics Benchmark
     (51 subjects, 8 sessions per subject, 50 repetitions of '.tie5Roanl' per session)
-    following a subject-conditioned enrollment-normalized and causally isolated protocol:
+    supporting two temporal evaluation protocols:
 
-    1. Initial Enrollment & Base Model Pre-training Split (Sessions 1–4, rep <= 20):
-       - Individual biometric template (mu_u, sigma_u) and base pre-training pool
-         (N_pretrain = 8,160: 80 genuine + 80 1-to-1 session/rep-matched impostor records per user)
-         are formed strictly from initial registration repetitions (rep <= 20).
-       - Pre-training features are standardized using `scaler_pre`, fit exclusively on `pretrain`
-         (zero statistics from adaptation, validation, or test splits).
-    2. Adaptation / Training Split (Sessions 1–4, 21 <= rep <= 35, N_train = 6,120):
-       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user (15 per session).
-       - Standardized using the same fixed `scaler_pre` coordinate space.
-    3. Validation Split (Sessions 5–6, rep > 20, N_val = 6,120):
-       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user under intermediate drift.
-    4. Test Split (Sessions 7–8, rep > 20, N_test = 6,120):
-       - 60 genuine + 60 1-to-1 session/rep-matched impostor samples per user under delayed drift.
+    Protocol A (`protocol="within_session"`, default — Within-Session Enrollment/Adaptation Split
+    with Forward Session Evaluation):
+      1. Initial Enrollment & Pre-training Split (T0: Sessions 1–4, rep <= 20, N_pretrain = 8,160):
+         - Individual biometric template (mu_u, sigma_u), base model w_0 pre-training pool,
+           and single feature standardizer `scaler_pre` are fit strictly on T0.
+      2. Adaptation / Training Split (T1: Sessions 1–4, 21 <= rep <= 35, N_train = 6,120).
+      3. Validation Split (T2: Sessions 5–6, 21 <= rep <= 50, N_val = 6,120).
+      4. Test Split (T3: Sessions 7–8, 21 <= rep <= 50, N_test = 6,120).
+
+    Protocol B (`protocol="strict_session"` — Strict Session-Sequential Causal Protocol, T0 < T1 < T2 < T3):
+      1. Enrollment & Pre-training Split (T0: Sessions 1–2, rep <= 40, N_pretrain = 8,160):
+         - Individual biometric template (mu_u, sigma_u), base model w_0 pre-training pool,
+           and single feature standardizer `scaler_pre` are fit exclusively on Sessions 1–2
+           (zero observations from Sessions 3–8 used during enrollment or pre-training).
+      2. Adaptation / Training Split (T1: Sessions 3–4, 21 <= rep <= 50, N_train = 6,120).
+      3. Validation Split (T2: Sessions 5–6, 21 <= rep <= 50, N_val = 6,120).
+      4. Test Split (T3: Sessions 7–8, 21 <= rep <= 50, N_test = 6,120).
 
     Feature Vector (D = 338 Subject-Conditioned Enrollment-Normalized Biometric Dimensions, ordered as [11 H, 10 DD, 10 UD]):
     - 31 relative rhythmic timings normalized by total inter-key press span T_DD = sum(DD): r_k = x_k / T_DD
@@ -185,6 +201,9 @@ def prepare_concept_drift_dataset(
     - 7 statistical summary norms (L1, L2, and 75th-percentile deviations)
     Total: 31 * 10 + 11 + 10 + 7 = 338 deterministic biometric features.
     """
+    if protocol not in ("within_session", "strict_session"):
+        raise ValueError(f"Unsupported protocol '{protocol}'. Choose 'within_session' or 'strict_session'.")
+
     if isinstance(csv_path_or_df, (str, Path)):
         df = pd.read_csv(csv_path_or_df)
     else:
@@ -196,8 +215,13 @@ def prepare_concept_drift_dataset(
     subjects = sorted(df["subject"].unique())
     subj_groups = {s: group for s, group in df.groupby("subject", sort=False)}
 
-    s14_enroll_pool = df[(df["sessionIndex"].isin([1, 2, 3, 4])) & (df["rep"] <= 20)]
-    s14_adapt_pool = df[(df["sessionIndex"].isin([1, 2, 3, 4])) & (df["rep"] > 20) & (df["rep"] <= 35)]
+    if protocol == "within_session":
+        t0_enroll_pool = df[(df["sessionIndex"].isin([1, 2, 3, 4])) & (df["rep"] <= 20)]
+        t1_adapt_pool = df[(df["sessionIndex"].isin([1, 2, 3, 4])) & (df["rep"] > 20) & (df["rep"] <= 35)]
+    else:
+        t0_enroll_pool = df[(df["sessionIndex"].isin([1, 2])) & (df["rep"] <= 40)]
+        t1_adapt_pool = df[(df["sessionIndex"].isin([3, 4])) & (df["rep"] > 20)]
+
     s56_pool = df[(df["sessionIndex"].isin([5, 6])) & (df["rep"] > 20)]
     s78_pool = df[(df["sessionIndex"].isin([7, 8])) & (df["rep"] > 20)]
 
@@ -208,8 +232,13 @@ def prepare_concept_drift_dataset(
     for idx, subj in enumerate(subjects):
         sdf = subj_groups[subj]
 
-        # Strictly historical enrollment baseline from Sessions 1-4 (rep <= 20)
-        enroll = sdf[(sdf["sessionIndex"].isin([1, 2, 3, 4])) & (sdf["rep"] <= 20)]
+        if protocol == "within_session":
+            enroll = sdf[(sdf["sessionIndex"].isin([1, 2, 3, 4])) & (sdf["rep"] <= 20)]
+            gen_tr = sdf[(sdf["sessionIndex"].isin([1, 2, 3, 4])) & (sdf["rep"] > 20) & (sdf["rep"] <= 35)]
+        else:
+            enroll = sdf[(sdf["sessionIndex"].isin([1, 2])) & (sdf["rep"] <= 40)]
+            gen_tr = sdf[(sdf["sessionIndex"].isin([3, 4])) & (sdf["rep"] > 20)]
+
         enroll_s1 = sdf[(sdf["sessionIndex"] == 1) & (sdf["rep"] <= 20)]
 
         raw_e = enroll[CANONICAL_TIMING_COLS].values
@@ -229,18 +258,12 @@ def prepare_concept_drift_dataset(
         mean_hrel = hrel_e.mean(axis=0)
         std_hrel = hrel_e.std(axis=0) + 1e-4
 
-        # Chronological splits with identical session & repetition ranges for genuine and impostor:
-        # - pretrain: Sessions 1-4 (rep <= 20)
-        # - train (adaptation): Sessions 1-4 (21 <= rep <= 35)
-        # - val: Sessions 5-6 (21 <= rep <= 50)
-        # - test: Sessions 7-8 (21 <= rep <= 50)
         gen_pre = enroll
-        gen_tr = sdf[(sdf["sessionIndex"].isin([1, 2, 3, 4])) & (sdf["rep"] > 20) & (sdf["rep"] <= 35)]
         gen_vl = sdf[(sdf["sessionIndex"].isin([5, 6])) & (sdf["rep"] > 20)]
         gen_te = sdf[(sdf["sessionIndex"].isin([7, 8])) & (sdf["rep"] > 20)]
 
-        imp_pre = sample_stratified_impostors(s14_enroll_pool, subj, gen_pre, seed + 900 + idx)
-        imp_tr = sample_stratified_impostors(s14_adapt_pool, subj, gen_tr, seed + idx)
+        imp_pre = sample_stratified_impostors(t0_enroll_pool, subj, gen_pre, seed + 900 + idx)
+        imp_tr = sample_stratified_impostors(t1_adapt_pool, subj, gen_tr, seed + idx)
         imp_vl = sample_stratified_impostors(s56_pool, subj, gen_vl, seed + 200 + idx)
         imp_te = sample_stratified_impostors(s78_pool, subj, gen_te, seed + 400 + idx)
 
@@ -338,6 +361,7 @@ def prepare_concept_drift_dataset(
     subj_arrays["pretrain_xy"] = out_arrays["pretrain"]
     subj_arrays["scaler_pre_mean"] = scaler_pre.mean_.copy()
     subj_arrays["scaler_adapt_mean"] = scaler_pre.mean_.copy()
+    subj_arrays["protocol"] = protocol
 
     X_train, y_train = out_arrays["train"]
     X_val, y_val = out_arrays["val"]
