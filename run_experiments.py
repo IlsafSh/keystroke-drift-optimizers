@@ -53,7 +53,7 @@ def generate_figures(summary: dict, out_dir: Path, lang: str = "en"):
             "RMSprop": {"color": "#d62728", "marker": "o", "ls": "-", "label": "RMSprop (базовый)"},
             "Steepest Descent (Armijo)": {"color": "#1f77b4", "marker": "s", "ls": "--", "label": "Наискорейший спуск (Армихо)"},
             "Block Coordinate Descent": {"color": "#ff7f0e", "marker": "^", "ls": "-.", "label": "Блочный координатный спуск"},
-            "Conjugate Gradients (FR)": {"color": "#2ca02c", "marker": "D", "ls": "-", "label": "Сопряжённые градиенты (ФР)"},
+            "Conjugate Gradients (FR)": {"color": "#2ca02c", "marker": "D", "ls": "-", "label": "Сопряжённые градиенты (Флетчер-Ривз)"},
         }
     else:
         styles = {
@@ -141,7 +141,7 @@ def generate_figures(summary: dict, out_dir: Path, lang: str = "en"):
         ax1.set_title("а) ROC-кривые на отложенных сессиях с дрейфом", fontweight="bold")
         ax1.set_xlabel("Вероятность ложного допуска (FAR), %")
         ax1.set_ylabel("Вероятность верного допуска (TAR = 1 − FRR), %")
-        method_labels = ["RMSprop", "Наискорейший\nспуск", "Блочный\nкоорд. спуск", "Сопряжённые\nградиенты (ФР)"]
+        method_labels = ["RMSprop", "Наискорейший\nспуск", "Блочный\nкоорд. спуск", "Сопряжённые\nградиенты\n(Флетчер-Ривз)"]
         eer_bar_lbl = "Равная ошибка (EER), %"
         far_bar_lbl = "Ложный допуск (FAR), %"
         ax2.set_title("б) Профильные биометрические ошибки на тесте", fontweight="bold")
