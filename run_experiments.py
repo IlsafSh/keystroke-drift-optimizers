@@ -36,6 +36,121 @@ FIG_DIR = ROOT_DIR / "figures"
 RESULTS_JSON = ROOT_DIR / "experiment_results.json"
 
 
+ROC_FPR_GRID = np.linspace(0.0, 0.40, 401)  # common FPR grid used to average ROC curves across seeds
+
+
+def generate_multiseed_figures(multi_runs: dict, aggregate: dict, out_dir: Path, lang: str = "en"):
+    """
+    Publication figures aggregated over all seeds (mean +/- std):
+      Fig. 1: validation loss / accuracy convergence (mean curve, +/-1 std band);
+      Fig. 2: (a) mean ROC curves, (b) EER and FAR @ validation-calibrated threshold (FRR_val = 10%), mean +/- std.
+    """
+    out_dir.mkdir(parents=True, exist_ok=True)
+    plt.rcParams.update({
+        "font.family": "DejaVu Sans", "font.size": 11, "axes.titlesize": 12,
+        "axes.labelsize": 11, "legend.fontsize": 9.5,
+    })
+    ru = lang == "ru"
+    order = ["RMSprop", "Adam", "Steepest Descent (Armijo)", "Block Coordinate Descent", "Conjugate Gradients (FR)"]
+    order = [k for k in order if k in aggregate]
+    labels = {
+        "RMSprop": "RMSprop" + (" (базовый)" if ru else " (baseline)"),
+        "Adam": "Adam" + (" (базовый)" if ru else " (baseline)"),
+        "Steepest Descent (Armijo)": "Наискорейший спуск (Армихо)" if ru else "Steepest Descent (Armijo)",
+        "Block Coordinate Descent": "Блочный координатный спуск" if ru else "Block Coordinate Descent",
+        "Conjugate Gradients (FR)": "Сопряжённые градиенты (Флетчер-Ривз)" if ru else "Conjugate Gradients (FR)",
+    }
+    bar_labels = {
+        "RMSprop": "RMSprop", "Adam": "Adam",
+        "Steepest Descent (Armijo)": "Наискорейший\nспуск" if ru else "Steepest\nDescent",
+        "Block Coordinate Descent": "Блочный\nкоорд. спуск" if ru else "Block\nCoord.",
+        "Conjugate Gradients (FR)": "Сопряжённые\nградиенты" if ru else "Conjugate\nGradients",
+    }
+    styles = {
+        "RMSprop": ("#d62728", "o", "-"), "Adam": ("#9467bd", "v", ":"),
+        "Steepest Descent (Armijo)": ("#1f77b4", "s", "--"), "Block Coordinate Descent": ("#ff7f0e", "^", "-."),
+        "Conjugate Gradients (FR)": ("#2ca02c", "D", "-"),
+    }
+    seeds = list(multi_runs.keys())
+    n_ep = len(multi_runs[seeds[0]][order[0]]["val_loss_curve"])
+    epochs = np.arange(1, n_ep + 1)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.5, 4.8), dpi=300)
+    for k in order:
+        col, mk, ls = styles[k]
+        L = np.array([multi_runs[sd][k]["val_loss_curve"] for sd in seeds])
+        A = np.array([multi_runs[sd][k]["val_acc_curve"] for sd in seeds]) * 100.0
+        for ax, M in ((ax1, L), (ax2, A)):
+            mu, sd_ = M.mean(0), M.std(0, ddof=1)
+            ax.plot(epochs, mu, color=col, marker=mk, linestyle=ls, linewidth=2.0, markersize=4.5, label=labels[k])
+            ax.fill_between(epochs, mu - sd_, mu + sd_, color=col, alpha=0.12, linewidth=0)
+    n_s = len(seeds)
+    if ru:
+        ax1.set_title("а) Функция потерь на валидации", fontweight="bold")
+        ax2.set_title("б) Точность верификации на валидации", fontweight="bold")
+        for ax in (ax1, ax2):
+            ax.set_xlabel(f"Эпоха адаптивного дообучения (среднее ± σ, {n_s} запусков)")
+        ax1.set_ylabel("Бинарная кросс-энтропия (Val Loss)")
+        ax2.set_ylabel("Точность верификации (Val Accuracy), %")
+    else:
+        ax1.set_title("a) Validation Loss", fontweight="bold")
+        ax2.set_title("b) Validation Verification Accuracy", fontweight="bold")
+        for ax in (ax1, ax2):
+            ax.set_xlabel(f"Adaptation Epoch (mean ± std, {n_s} seeds)")
+        ax1.set_ylabel("Binary Cross-Entropy Loss")
+        ax2.set_ylabel("Verification Accuracy, %")
+    for ax, loc in ((ax1, "upper right"), (ax2, "lower right")):
+        ax.set_xticks(range(2, n_ep + 1, 2))
+        ax.grid(True, linestyle=":", alpha=0.7)
+        ax.legend(loc=loc, frameon=True, fontsize=8.5)
+    fig.tight_layout()
+    fig.savefig(out_dir / "fig1_convergence_loss_acc.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12.5, 4.8), dpi=300)
+    fpr = ROC_FPR_GRID * 100.0
+    for k in order:
+        col, mk, ls = styles[k]
+        T = np.array([multi_runs[sd][k]["roc_tpr_on_fpr_grid"] for sd in seeds]) * 100.0
+        ax1.plot(fpr, T.mean(0), color=col, linestyle=ls, linewidth=2.0,
+                 label=f"{labels[k]} (AUC={aggregate[k]['roc_auc_mean']:.3f})")
+    ax1.plot([0, 100], [100, 0], color="gray", linestyle=":", linewidth=1.2,
+             label="Линия равной ошибки (FAR = FRR)" if ru else "Equal Error Line (FAR = FRR)")
+    ax1.set_xlim(0, 35)
+    ax1.set_ylim(65, 100)
+    ax1.set_xlabel("Вероятность ложного допуска (FAR), %" if ru else "False Acceptance Rate (FAR), %")
+    ax1.set_ylabel("Вероятность верного допуска (TAR = 1 − FRR), %" if ru else "True Acceptance Rate (TAR = 1 - FRR), %")
+    ax1.set_title(("а) Средние ROC-кривые на тестовых сессиях" if ru else "a) Mean ROC Curves on Test Sessions"), fontweight="bold")
+    ax1.grid(True, linestyle=":", alpha=0.7)
+    ax1.legend(loc="lower right", frameon=True, fontsize=8.3)
+
+    x = np.arange(len(order))
+    w = 0.36
+    eer_m = [aggregate[k]["eer_mean_pct"] for k in order]
+    eer_s = [aggregate[k]["eer_std_pct"] for k in order]
+    far_m = [aggregate[k]["far_at_val_frr_10_mean_pct"] for k in order]
+    far_s = [aggregate[k]["far_at_val_frr_10_std_pct"] for k in order]
+    b1 = ax2.bar(x - w / 2, eer_m, w, yerr=eer_s, capsize=3, color="#2b5c8f",
+                 label="Равная ошибка (EER), %" if ru else "Equal Error Rate (EER), %")
+    b2 = ax2.bar(x + w / 2, far_m, w, yerr=far_s, capsize=3, color="#d95f02",
+                 label="Ложный допуск (FAR), порог FRR_val = 10 %" if ru else "FAR @ validation threshold (FRR_val = 10%), %")
+    for bars, vals, errs in ((b1, eer_m, eer_s), (b2, far_m, far_s)):
+        for bar, v, e in zip(bars, vals, errs):
+            ax2.annotate(f"{v:.2f}", xy=(bar.get_x() + bar.get_width() / 2, v + e), xytext=(0, 2),
+                         textcoords="offset points", ha="center", va="bottom", fontsize=8.5)
+    ax2.set_xticks(x)
+    ax2.set_xticklabels([bar_labels[k] for k in order], fontsize=9)
+    ax2.set_ylabel("Уровень ошибки, %" if ru else "Error Rate, %")
+    ax2.set_ylim(0, max(np.array(eer_m) + np.array(eer_s)) * 1.3)
+    ax2.set_title(("б) EER и FAR (среднее ± σ, %d запусков)" % n_s) if ru else f"b) EER and FAR (mean ± std, {n_s} seeds)", fontweight="bold")
+    ax2.grid(True, axis="y", linestyle=":", alpha=0.7)
+    ax2.legend(loc="upper right", frameon=True, fontsize=8.5)
+    fig.tight_layout()
+    fig.savefig(out_dir / "fig2_roc_and_biometric_errors.png", dpi=300, bbox_inches="tight")
+    plt.close(fig)
+    print(f"[+] Multi-seed figures ({lang}) saved to: {out_dir}")
+
+
 def generate_figures(summary: dict, out_dir: Path, lang: str = "en"):
     """Generates high-resolution publication figures (300 DPI)."""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -393,6 +508,12 @@ def run_multi_seed_protocol(
             }
             for k in s_sum
         }
+        for k in s_sum:
+            multi_runs_by_seed[f"seed_{s}"][k]["val_loss_curve"] = [float(x) for x in s_sum[k]["history"]["val_loss"]]
+            multi_runs_by_seed[f"seed_{s}"][k]["val_acc_curve"] = [float(x) for x in s_sum[k]["history"]["val_accuracy"]]
+            multi_runs_by_seed[f"seed_{s}"][k]["roc_tpr_on_fpr_grid"] = [
+                float(x) for x in np.interp(ROC_FPR_GRID, s_sum[k]["roc"]["fpr"], s_sum[k]["roc"]["tpr"])
+            ]
         for k in multi_res:
             multi_res[k].append(s_sum[k])
 
@@ -442,12 +563,12 @@ def run_multi_seed_protocol(
             "far_05_mean_pct": float(np.mean(fars)),
             "far_05_std_pct": float(np.std(fars, ddof=1)),
             "far_at_frr_10_mean_pct": float(np.mean(far10s)),
-            "far_at_frr_10_std_pct": float(np.std(far10s)),
+            "far_at_frr_10_std_pct": float(np.std(far10s, ddof=1)),
             "far_at_val_frr_10_mean_pct": float(np.mean(far_val10s)),
-            "far_at_val_frr_10_std_pct": float(np.std(far_val10s)),
+            "far_at_val_frr_10_std_pct": float(np.std(far_val10s, ddof=1)),
             "far_at_val_frr_10_ci95_pct": float(ci_factor * np.std(far_val10s, ddof=1)),
             "frr_at_val_frr_10_mean_pct": float(np.mean(frr_val10s)),
-            "frr_at_val_frr_10_std_pct": float(np.std(frr_val10s)),
+            "frr_at_val_frr_10_std_pct": float(np.std(frr_val10s, ddof=1)),
             "frr_at_val_frr_10_ci95_pct": float(ci_factor * np.std(frr_val10s, ddof=1)),
             "roc_auc_mean": float(np.mean(aucs)),
             "roc_auc_std": float(np.std(aucs, ddof=1)),
@@ -563,6 +684,7 @@ def main():
     parser.add_argument("--protocol", type=str, default="within_session", choices=["within_session", "strict_session"], help="Temporal split protocol")
     parser.add_argument("--include-adam", action="store_true", help="Include Adam optimizer in benchmark table")
     parser.add_argument("--multi-seed", action="store_true", help="Evaluate and persist mean +/- std across 5 seeds (42..46)")
+    parser.add_argument("--ru-fig-dir", type=str, default=None, help="Optional output dir for Russian-language multi-seed figures")
     args = parser.parse_args()
 
     print(f"[*] Loading dataset from {args.data}...")
@@ -672,7 +794,12 @@ def main():
         json.dump(output_payload, f, ensure_ascii=False, indent=2)
     print(f"[+] Complete results and multi-seed statistics saved to: {RESULTS_JSON}")
 
-    generate_figures(summary, FIG_DIR, lang="en")
+    if args.multi_seed:
+        generate_multiseed_figures(multi_runs_by_seed, aggregate_stats, FIG_DIR, lang="en")
+        if args.ru_fig_dir:
+            generate_multiseed_figures(multi_runs_by_seed, aggregate_stats, Path(args.ru_fig_dir), lang="ru")
+    else:
+        generate_figures(summary, FIG_DIR, lang="en")
 
 
 if __name__ == "__main__":

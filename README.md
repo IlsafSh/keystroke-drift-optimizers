@@ -123,13 +123,13 @@ $$
 
 | Optimization Method | Update Regime | Batch Size | Grad Evals | Grad Samples Processed | Func Evals (mean ± std) | Backtracking Steps (mean ± std) | Epoch Time, ms (seed=42) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 18.7 |
-| **Adam (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 21.0 |
-| **Steepest Descent (Armijo)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 168.4 ± 3.8 | 8.4 ± 3.8 | 43.2 |
-| **Block Coordinate Descent** | 4 sweeps × 3 blocks / epoch | 6,120 | 240 (block) | 1,468,800 | 482.4 ± 0.5 | 2.4 ± 0.5 | 103.4 |
-| **Conjugate Gradients (FR)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 165.4 ± 3.8 | 5.4 ± 3.8 | 46.4 |
+| **RMSprop (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 29.1 |
+| **Adam (baseline)** | 4 mini-batches / epoch | 1,530 | 80 (mini) | 122,400 | 80.0 ± 0.0 | 0.0 ± 0.0 | 16.8 |
+| **Steepest Descent (Armijo)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 168.4 ± 3.8 | 8.4 ± 3.8 | 54.4 |
+| **Block Coordinate Descent** | 4 sweeps × 3 blocks / epoch | 6,120 | 240 (block) | 1,468,800 | 482.4 ± 0.5 | 2.4 ± 0.5 | 109.0 |
+| **Conjugate Gradients (FR)** | 4 full-batch steps / epoch | 6,120 | 80 (full) | 489,600 | 165.4 ± 3.8 | 5.4 ± 3.8 | 51.4 |
 
-*Note:* For Armijo line-search methods, each step reuses the forward pass loss $`\mathcal{L}(\mathbf{w}_k)`$ computed during gradient evaluation and performs 1 trial evaluation $`\mathcal{L}(\mathbf{w}_k + \alpha_0 \mathbf{p}_k)`$ plus any step-halving backtracking evaluations (`Func Evals = Grad Evals + Steps + Backtracking Steps`).
+*Note:* Epoch times are wall-clock measurements on a shared CPU and vary between runs by tens of percent; only their ordering is meaningful. For Armijo line-search methods, each step reuses the forward pass loss $`\mathcal{L}(\mathbf{w}_k)`$ computed during gradient evaluation and performs 1 trial evaluation $`\mathcal{L}(\mathbf{w}_k + \alpha_0 \mathbf{p}_k)`$ plus any step-halving backtracking evaluations (`Func Evals = Grad Evals + Steps + Backtracking Steps`).
 
 ---
 
@@ -139,11 +139,11 @@ $$
 
 | Optimization Method | Grad Evals | Func Evals | Train Loss | Train Acc, % | Val Loss | Val Acc, % | Test Loss | Test Acc, % | Pooled EER, % | Per-User EER, % | FAR @ Val FRR=10%, % | FRR @ Val FRR=10%, % | ROC AUC | Epoch Time, ms |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 80 (mini) | 80 | 0.1272 | 95.46 | 0.3676 | 86.18 | 0.6201 | 78.56 | 17.68 | 15.67 ± 14.72 | 15.26 | 20.62 | 0.9047 | 18.7 |
-| **Adam (baseline)** | 80 (mini) | 80 | 0.1296 | 95.20 | 0.3438 | 86.37 | 0.5924 | 78.97 | 18.38 | 15.95 ± 14.58 | 14.77 | 22.32 | 0.9041 | 21.0 |
-| **Steepest Descent (Armijo)** | 80 (full) | 166 | 0.1253 | 95.34 | **0.3264** | 87.16 | **0.5359** | **81.03** | **16.21** | 14.75 ± 13.41 | 14.31 | 18.99 | **0.9144** | 43.2 |
-| **Block Coordinate Descent** | 240 (block) | 482 | 0.1217 | 95.39 | 0.3285 | 87.21 | 0.5455 | 80.88 | 16.27 | 14.87 ± 13.47 | 14.08 | **19.18** | 0.9140 | 103.4 |
-| **Conjugate Gradients (FR)** | 80 (full) | 167 | **0.0855** | **97.24** | 0.3510 | **87.34** | 0.6084 | 80.46 | 16.50 | **14.72 ± 13.42** | **12.78** | 20.56 | 0.9134 | 46.4 |
+| **RMSprop (baseline)** | 80 (mini) | 80 | 0.1272 | 95.46 | 0.3676 | 86.18 | 0.6201 | 78.56 | 17.68 | 15.67 ± 14.72 | 15.26 | 20.62 | 0.9047 | 29.1 |
+| **Adam (baseline)** | 80 (mini) | 80 | 0.1296 | 95.20 | 0.3438 | 86.37 | 0.5924 | 78.97 | 18.38 | 15.95 ± 14.58 | 14.77 | 22.32 | 0.9041 | 16.8 |
+| **Steepest Descent (Armijo)** | 80 (full) | 166 | 0.1253 | 95.34 | **0.3264** | 87.16 | **0.5359** | **81.03** | **16.21** | 14.75 ± 13.41 | 14.31 | **18.99** | **0.9144** | 54.4 |
+| **Block Coordinate Descent** | 240 (block) | 482 | 0.1217 | 95.39 | 0.3285 | 87.21 | 0.5455 | 80.88 | 16.27 | 14.87 ± 13.47 | 14.08 | 19.18 | 0.9140 | 109.0 |
+| **Conjugate Gradients (FR)** | 80 (full) | 167 | **0.0855** | **97.24** | 0.3510 | **87.34** | 0.6084 | 80.46 | 16.50 | 14.72 ± 13.42 | **12.78** | 20.56 | 0.9134 | 51.4 |
 
 ### 3.2. Chronological Per-Session EER Progression (`Sessions 5 -> 6 -> 7 -> 8`, Seeds 42–46, mean ± std)
 
@@ -163,11 +163,11 @@ Confidence intervals are calculated using the two-tailed Student-$`t`$ distribut
 
 | Optimization Method | Pooled EER, % (mean ± std [95% CI]) | Per-User EER, % (mean ± std [95% CI]) | FAR @ 0.5, % (mean ± std) | FAR @ Val FRR=10%, % (mean ± std) | FRR @ Val FRR=10%, % (mean ± std) | ROC AUC (mean ± std) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 17.41 ± 0.27 [±0.34] | 15.18 ± 0.60 [±0.74] | **5.65 ± 0.90** | 13.79 ± 0.96 | 21.89 ± 0.64 | 0.9088 ± 0.0029 |
-| **Adam (baseline)** | 17.66 ± 0.41 [±0.51] | 15.29 ± 0.51 [±0.63] | 6.53 ± 0.52 | 13.88 ± 0.75 | 22.09 ± 0.70 | 0.9091 ± 0.0030 |
-| **Steepest Descent (Armijo)** | 16.97 ± 0.47 [±0.58] | 15.00 ± 0.39 [±0.48] | 6.38 ± 0.68 | 13.57 ± 0.84 | **20.73 ± 1.06** | 0.9117 ± 0.0021 |
-| **Block Coordinate Descent** | 16.78 ± 0.36 [±0.45] | 14.72 ± 0.54 [±0.68] | 6.52 ± 0.57 | 13.24 ± 0.83 | 20.79 ± 1.10 | 0.9127 ± 0.0027 |
-| **Conjugate Gradients (FR)** | **16.41 ± 0.29 [±0.36]** | **14.25 ± 0.27 [±0.33]** | 5.76 ± 0.67 | **12.08 ± 0.81** | 21.39 ± 0.73 | **0.9168 ± 0.0030** |
+| **RMSprop (baseline)** | 17.41 ± 0.27 [±0.34] | 15.18 ± 0.60 [±0.74] | 5.65 ± 0.90 | 13.79 ± 1.08 | 21.89 ± 0.72 | 0.9088 ± 0.0029 |
+| **Adam (baseline)** | 17.66 ± 0.41 [±0.51] | 15.29 ± 0.51 [±0.63] | 6.53 ± 0.52 | 13.88 ± 0.84 | 22.09 ± 0.78 | 0.9091 ± 0.0030 |
+| **Steepest Descent (Armijo)** | 16.97 ± 0.47 [±0.58] | 15.00 ± 0.39 [±0.48] | 6.38 ± 0.68 | 13.57 ± 0.94 | **20.73 ± 1.19** | 0.9117 ± 0.0021 |
+| **Block Coordinate Descent** | 16.78 ± 0.36 [±0.45] | 14.72 ± 0.54 [±0.68] | 6.52 ± 0.57 | 13.24 ± 0.93 | 20.79 ± 1.23 | 0.9127 ± 0.0027 |
+| **Conjugate Gradients (FR)** | **16.41 ± 0.29 [±0.36]** | **14.25 ± 0.27 [±0.33]** | 5.76 ± 0.67 | **12.08 ± 0.90** | 21.39 ± 0.82 | **0.9168 ± 0.0030** |
 
 *Note on Operating Point Shift under Concept Drift:* Because the decision threshold $`\tau^*`$ is calibrated on `T2` (`Sessions 5–6`) for $`\text{FRR}_{\text{val}}(\tau^*) \le 10\%`$ without looking at test labels, temporal concept drift between `Sessions 5–6` and `Sessions 7–8` shifts genuine score distributions downward, resulting in test `FRR @ Val FRR=10%` of `20.73%–22.09%`. At this fixed threshold $`\tau^*`$, **FR-CG** achieves the lowest false acceptance rate (`FAR = 12.08 ± 0.81%`), while **Steepest Descent** and **BCD** yield the lowest test false rejection rates (`20.73%` and `20.79%`).
 
@@ -186,13 +186,13 @@ Because all methods share the exact same data splits and pre-trained initializat
 
 Under **Protocol B (`strict_session`)**, where all four temporal splits occupy strictly disjoint calendar sessions (`T0: Sessions 1–2, rep ≤ 40` → `T1: Sessions 3–4, rep 21..50` → `T2: Sessions 5–6, rep 21..50` → `T3: Sessions 7–8, rep 21..50`), adapting on the chronologically closer `Sessions 3–4` reduces delayed test error across all methods while **preserving the exact same optimizer ranking**:
 
-| Optimization Method | Pooled EER, % (mean ± std [95% CI]) | Per-User EER, % (mean ± std [95% CI]) | FAR @ Val FRR=10%, % (mean ± std) | FRR @ Val FRR=10%, % (mean ± std) | ROC AUC (mean ± std) | Session 5 -> 6 -> 7 -> 8 EER, % (mean) | Paired ΔEER vs. FR-CG, pp (raw p) |
+| Optimization Method | Pooled EER, % (mean ± std [95% CI]) | Per-User EER, % (mean ± std [95% CI]) | FAR @ Val FRR=10%, % (mean ± std) | FRR @ Val FRR=10%, % (mean ± std) | ROC AUC (mean ± std) | Session 5 -> 6 -> 7 -> 8 EER, % (mean) | Paired ΔEER vs. FR-CG, pp (raw p; Holm p) |
 | :--- | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| **RMSprop (baseline)** | 15.90 ± 0.58 [±0.72] | 13.71 ± 0.33 [±0.42] | 12.63 ± 0.70 | 19.79 ± 0.38 | 0.9215 ± 0.0044 | 11.76 -> 11.52 -> 15.50 -> 16.27 | +1.13 ± 0.93 (p = 0.0533) |
-| **Adam (baseline)** | 15.77 ± 0.53 [±0.66] | 13.81 ± 0.45 [±0.56] | 12.29 ± 0.50 | 20.00 ± 0.81 | 0.9215 ± 0.0027 | 11.31 -> 11.56 -> 15.31 -> 16.18 | +1.01 ± 0.65 (p = 0.0261) |
-| **Steepest Descent (Armijo)** | 15.77 ± 0.29 [±0.36] | 13.74 ± 0.39 [±0.49] | 11.88 ± 0.57 | 19.98 ± 0.74 | 0.9216 ± 0.0021 | 11.47 -> 11.36 -> 15.28 -> 16.33 | +1.01 ± 0.72 (p = 0.0352) |
-| **Block Coordinate Descent** | 15.46 ± 0.35 [±0.44] | 13.46 ± 0.39 [±0.48] | 11.69 ± 0.45 | 19.92 ± 0.62 | 0.9236 ± 0.0019 | 11.20 -> 11.36 -> 14.79 -> 16.05 | +0.69 ± 0.57 (p = 0.0531) |
-| **Conjugate Gradients (FR)** | **14.77 ± 0.58 [±0.72]** | **12.90 ± 0.65 [±0.80]** | **10.58 ± 0.78** | **19.63 ± 1.46** | **0.9293 ± 0.0030** | **10.36 -> 10.89 -> 14.10 -> 15.48** | — (Reference) |
+| **RMSprop (baseline)** | 15.90 ± 0.58 [±0.72] | 13.71 ± 0.33 [±0.42] | 12.63 ± 0.78 | 19.79 ± 0.42 | 0.9215 ± 0.0044 | 11.76 -> 11.52 -> 15.50 -> 16.27 | +1.13 ± 0.93 (p = 0.0533; Holm 0.1062) |
+| **Adam (baseline)** | 15.77 ± 0.53 [±0.66] | 13.81 ± 0.45 [±0.56] | 12.29 ± 0.56 | 20.00 ± 0.91 | 0.9215 ± 0.0027 | 11.31 -> 11.56 -> 15.31 -> 16.18 | +1.01 ± 0.65 (p = 0.0261; Holm 0.1045) |
+| **Steepest Descent (Armijo)** | 15.77 ± 0.29 [±0.36] | 13.74 ± 0.39 [±0.49] | 11.88 ± 0.64 | 19.98 ± 0.83 | 0.9216 ± 0.0021 | 11.47 -> 11.36 -> 15.28 -> 16.33 | +1.01 ± 0.72 (p = 0.0352; Holm 0.1057) |
+| **Block Coordinate Descent** | 15.46 ± 0.35 [±0.44] | 13.46 ± 0.39 [±0.48] | 11.69 ± 0.51 | 19.92 ± 0.69 | 0.9236 ± 0.0019 | 11.20 -> 11.36 -> 14.79 -> 16.05 | +0.69 ± 0.57 (p = 0.0531; Holm 0.1062) |
+| **Conjugate Gradients (FR)** | **14.77 ± 0.58 [±0.72]** | **12.90 ± 0.65 [±0.80]** | **10.58 ± 0.88** | **19.63 ± 1.63** | **0.9293 ± 0.0030** | 10.36 -> 10.89 -> 14.10 -> 15.48 | — (Reference) |
 
 *Note on significance:* in the strict protocol all raw paired $`p`$-values for Steepest Descent and Adam vs. FR-CG are below 0.05 (0.0352 and 0.0261), but after Holm–Bonferroni correction none of the four comparisons remains significant (Holm $`p`$ = 0.104–0.106). The strict-protocol advantage of FR-CG is therefore a consistent trend, not a corrected-significant result.
 
@@ -200,10 +200,10 @@ Under **Protocol B (`strict_session`)**, where all four temporal splits occupy s
 
 ## 4. Convergence & Biometric Error Visualizations
 
-### Figure 1: Validation Convergence Dynamics
+### Figure 1: Validation Convergence Dynamics (mean ± std over seeds 42–46)
 ![Validation Convergence Dynamics](figures/fig1_convergence_loss_acc.png)
 
-### Figure 2: ROC Curves & Biometric Verification Errors on Delayed Drift Sessions
+### Figure 2: Mean ROC Curves, EER and FAR @ Val FRR=10% on Delayed Drift Sessions (mean ± std over seeds 42–46)
 ![ROC Curves and Biometric Errors](figures/fig2_roc_and_biometric_errors.png)
 
 ---
@@ -220,6 +220,8 @@ keystroke-drift-optimizers/
 ├── figures/
 │   ├── fig1_convergence_loss_acc.png
 │   └── fig2_roc_and_biometric_errors.png
+├── tools/
+│   └── gen_readme_tables.py         # Regenerates README result tables from experiment_results.json
 ├── src/
 │   ├── __init__.py
 │   ├── dataset.py                   # Schema validation, within_session & strict_session splits, 338-dim features
