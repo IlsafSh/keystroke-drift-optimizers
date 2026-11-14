@@ -103,6 +103,9 @@ def generate_multiseed_figures(multi_runs: dict, aggregate: dict, out_dir: Path,
         ax.set_xticks(range(2, n_ep + 1, 2))
         ax.grid(True, linestyle=":", alpha=0.7)
         ax.legend(loc=loc, frameon=True, fontsize=8.5)
+    if ru:
+        from matplotlib.ticker import FuncFormatter
+        ax1.yaxis.set_major_formatter(FuncFormatter(lambda y, _: f"{y:.2f}".replace(".", ",")))
     fig.tight_layout()
     fig.savefig(out_dir / "fig1_convergence_loss_acc.png", dpi=300, bbox_inches="tight")
     plt.close(fig)
@@ -112,8 +115,9 @@ def generate_multiseed_figures(multi_runs: dict, aggregate: dict, out_dir: Path,
     for k in order:
         col, mk, ls = styles[k]
         T = np.array([multi_runs[sd][k]["roc_tpr_on_fpr_grid"] for sd in seeds]) * 100.0
+        auc_txt = f"{aggregate[k]['roc_auc_mean']:.3f}".replace(".", ",") if ru else f"{aggregate[k]['roc_auc_mean']:.3f}"
         ax1.plot(fpr, T.mean(0), color=col, linestyle=ls, linewidth=2.0,
-                 label=f"{labels[k]} (AUC={aggregate[k]['roc_auc_mean']:.3f})")
+                 label=f"{labels[k]} (AUC = {auc_txt})")
     ax1.plot([0, 100], [100, 0], color="gray", linestyle=":", linewidth=1.2,
              label="Линия равной ошибки (FAR = FRR)" if ru else "Equal Error Line (FAR = FRR)")
     ax1.set_xlim(0, 35)
@@ -133,10 +137,11 @@ def generate_multiseed_figures(multi_runs: dict, aggregate: dict, out_dir: Path,
     b1 = ax2.bar(x - w / 2, eer_m, w, yerr=eer_s, capsize=3, color="#2b5c8f",
                  label="Равная ошибка (EER), %" if ru else "Equal Error Rate (EER), %")
     b2 = ax2.bar(x + w / 2, far_m, w, yerr=far_s, capsize=3, color="#d95f02",
-                 label="Ложный допуск (FAR), порог FRR_val = 10 %" if ru else "FAR @ validation threshold (FRR_val = 10%), %")
+                 label="Ложный допуск (FAR при FRR ≤ 10 % на валидации), %" if ru else "FAR @ validation threshold (FRR ≤ 10%), %")
     for bars, vals, errs in ((b1, eer_m, eer_s), (b2, far_m, far_s)):
         for bar, v, e in zip(bars, vals, errs):
-            ax2.annotate(f"{v:.2f}", xy=(bar.get_x() + bar.get_width() / 2, v + e), xytext=(0, 2),
+            val_txt = f"{v:.2f}".replace(".", ",") if ru else f"{v:.2f}"
+            ax2.annotate(val_txt, xy=(bar.get_x() + bar.get_width() / 2, v + e), xytext=(0, 2),
                          textcoords="offset points", ha="center", va="bottom", fontsize=8.5)
     ax2.set_xticks(x)
     ax2.set_xticklabels([bar_labels[k] for k in order], fontsize=9)
